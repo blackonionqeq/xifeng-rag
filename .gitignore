@@ -1,0 +1,79 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.python-version.local
+
+# Packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Tests, type checking, and coverage
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Secrets and machine-local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+config.local.*
+
+# Private corpus and generated RAG data
+/saved_articles/
+/corpus/
+/data/
+/artifacts/
+/indexes/
+/qdrant_storage/
+/runs/
+/logs/
+/tmp/
+
+# Local databases and index sidecars
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+
+# Local model weights and runtimes
+/models/
+/ollama/
+*.gguf
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+*.onnx
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+
+# Editors
+.idea/
+.vscode/
+*.code-workspace
+
+# Operating systems
+.DS_Store
+Thumbs.db
+Desktop.ini
