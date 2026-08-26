@@ -162,7 +162,7 @@ chunking:
     deepseek:
       base_url: https://api.deepseek.com
       api_key_env: DEEPSEEK_API_KEY
-      default_model: deepseek-chat  # 示例；以本地账号实际可用模型为准
+      default_model: deepseek-v4-flash  # 示例；以本地账号实际可用模型为准
 ```
 
 外部 profile 的首次实现采用 OpenAI-compatible Chat Completions 形态。配置只描述明确需要的
@@ -200,6 +200,12 @@ chunking:
 数据库不得保存渲染后完整请求、外部服务原始响应或 API 密钥。成功时只保存通过校验的规范
 topics；失败时只保存 attempt、错误类型和不含输入/响应正文的结构诊断。普通日志同样不得
 输出完整 Prompt、文章正文、原始响应或密钥。
+
+API 密钥支持从项目根目录的 `.env` 复用。项目直接依赖 `python-dotenv`，在解析出
+`project_root` 后加载 `<project_root>/.env`，并设置 `override=false`，因此真实进程环境变量
+始终优先于 `.env`。`.env` 和其他本地变体必须被 Git 忽略；仓库只提交值为空的
+`.env.example`。provider 继续通过 `api_key_env` 引用变量名，不把密钥加入 Pydantic 配置、
+YAML、数据库或日志。缺少 `.env` 时应用正常启动；空值与缺失值在外部请求前明确报错。
 
 旧数据库提案的 provider 视为 `ollama`，自定义 Prompt 和 retry ID 可为空。迁移不能修改
 现有八个提案的 topics JSON 或状态。
@@ -257,6 +263,8 @@ topics；失败时只保存 attempt、错误类型和不含输入/响应正文�
 15. outline-first Prompt 在短文中优先识别前言、三个显式原则和总结，不把原则内的案例或
     子论点提升为顶层块；在指定长文上检查顶层结构完整性和人工修改量，避免通过强制少块
     合并独立主题。
+16. 项目根目录 `.env` 能提供 `DEEPSEEK_API_KEY`，已有进程环境变量优先，缺失 `.env`
+    不报错；配置、doctor、日志和测试输出均不显示密钥值。
 
 真实验收只允许对用户明确选择的单篇文章运行。不得批量运行 `chunks propose`，不得批准当前
 已有的真实提案，直到用户根据本规范完成实际审核。
