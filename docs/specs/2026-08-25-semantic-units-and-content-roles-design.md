@@ -1,6 +1,8 @@
 # 语义原子单元与内容角色设计
 
-状态：已确认，作为 V0 语义分块设计的第二份增补。
+状态：历史设计。原子单元与结束单元方案继续有效；内容角色方案已由
+[`2026-08-26-reviewable-chunk-retry-and-index-exclusion-design.md`](2026-08-26-reviewable-chunk-retry-and-index-exclusion-design.md)
+取代。新提案不再让模型输出 `content_role`，改由用户审核 `include_in_index`。
 
 ## 1. 实测问题
 
