@@ -1,0 +1,29 @@
+project_root: .
+corpus:
+  source_dir: ../test-reverse-wechat-official-accounts-paid-article/saved_articles
+  excluded_article_ids: []
+storage:
+  data_dir: data
+ollama:
+  executable: D:/ai-tools/ollama/ollama.exe
+  model_dir: D:/ai-models/ollama
+  host: http://127.0.0.1:11434
+  model: qwen3:4b-instruct-2507-q4_K_M
+  context_window: 32768
+  timeout_seconds: 900
+  max_retries: 2
+chunking:
+  codex_cli:
+    executable: codex
+    default_model: gpt-5.6-terra
+    timeout_seconds: 900
+    max_retries: 1
+  external_profiles: {}
+  # 如需启用外部单篇重试，将上一行替换为：
+  # external_profiles:
+  #   deepseek:
+  #     base_url: https://api.deepseek.com
+  #     api_key_env: DEEPSEEK_API_KEY
+  #     default_model: deepseek-v4-flash
+  #     timeout_seconds: 900
+  #     max_retries: 2

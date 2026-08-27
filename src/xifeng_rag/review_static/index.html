@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>西风分块审核</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <div>
+      <p class="eyebrow">本地人工审核</p>
+      <h1 id="article-title">正在加载…</h1>
+      <p id="metadata" class="metadata"></p>
+    </div>
+    <div id="review-actions" class="actions">
+      <span id="save-status" role="status"></span>
+      <button id="save-button" type="button">保存草案</button>
+      <button id="approve-button" class="approve" type="button" disabled>批准并更新索引</button>
+    </div>
+  </header>
+  <main id="review-main">
+    <section class="source-pane" aria-labelledby="source-heading">
+      <div class="pane-heading">
+        <h2 id="source-heading">原子单元</h2>
+        <p>点击单元后的横线可添加或移除边界。</p>
+      </div>
+      <div id="paragraphs"></div>
+    </section>
+    <aside class="topics-pane" aria-labelledby="topics-heading">
+      <div class="pane-heading">
+        <h2 id="topics-heading">分块草案</h2>
+        <p id="topic-count"></p>
+      </div>
+      <div id="topics"></div>
+    </aside>
+  </main>
+  <section id="completion-panel" class="completion-panel" aria-labelledby="completion-heading" hidden>
+    <p class="completion-mark" aria-hidden="true">✓</p>
+    <p class="eyebrow">本次审核完成</p>
+    <h2 id="completion-heading">已批准并更新索引</h2>
+    <dl class="completion-details">
+      <div><dt>进入索引</dt><dd id="completion-included"></dd></div>
+      <div><dt>排除索引</dt><dd id="completion-excluded"></dd></div>
+      <div><dt>批准清单</dt><dd id="completion-manifest"></dd></div>
+      <div><dt>活动索引</dt><dd id="completion-index"></dd></div>
+    </dl>
+    <button id="shutdown-button" type="button">关闭审核服务</button>
+    <p id="shutdown-status" class="completion-status" role="status">
+      结果已写入本地数据库，可以关闭审核服务。
+    </p>
+  </section>
+  <template id="topic-template">
+    <article class="topic-card">
+      <div class="topic-card-heading">
+        <strong class="topic-number"></strong>
+        <span class="topic-range"></span>
+      </div>
+      <label>标题<input class="topic-title" maxlength="200" required></label>
+      <label>概括<textarea class="topic-summary" maxlength="2000" rows="3" required></textarea></label>
+      <label>关键词<input class="topic-keywords" required></label>
+      <label class="index-toggle"><input class="topic-index" type="checkbox">进入索引</label>
+      <div class="topic-buttons">
+        <button class="locate-button secondary" type="button">定位此块</button>
+        <button class="merge-button secondary" type="button">与上一块合并</button>
+      </div>
+    </article>
+  </template>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

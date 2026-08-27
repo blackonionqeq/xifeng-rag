@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>西风评测集工作台</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <div><h1>评测集工作台</h1><p>人工问题、Codex 候选、稳定证据与冻结快照</p></div>
+    <button id="shutdown" class="quiet">关闭工作台</button>
+  </header>
+  <div id="notice" role="status"></div>
+  <main>
+    <aside class="sidebar">
+      <section>
+        <h2>数据集</h2>
+        <form id="dataset-form">
+          <input id="dataset-name" required placeholder="名称">
+          <input id="dataset-version" required placeholder="版本，如 v0.1">
+          <select id="dataset-purpose"><option value="pilot">pilot</option><option value="benchmark">benchmark</option></select>
+          <button>新建 draft</button>
+        </form>
+        <select id="dataset-list" size="5"></select>
+        <button id="freeze" class="danger">冻结当前数据集</button>
+      </section>
+      <section>
+        <h2>问题</h2>
+        <form id="question-form">
+          <textarea id="question-query" required placeholder="人工原样录入问题"></textarea>
+          <select id="article-list" required></select>
+          <select id="question-split"><option value="dev">dev</option><option value="holdout">holdout</option></select>
+          <button>保存为新问题</button>
+        </form>
+        <div id="question-list"></div>
+      </section>
+    </aside>
+    <section id="workspace" class="workspace hidden">
+      <div class="article-pane">
+        <div class="pane-title"><h2 id="article-title"></h2><span id="selection-help">点击起点和终点选择证据</span></div>
+        <div id="paragraphs"></div>
+      </div>
+      <div class="review-pane">
+        <h2 id="current-question"></h2>
+        <div class="actions">
+          <button id="edit-question" class="quiet">编辑题目</button>
+          <button id="ai-assist">AI 辅助判断</button>
+          <span id="ai-status"></span>
+        </div>
+        <div id="proposals"></div>
+        <label>人工确认的参考答案<textarea id="reference-answer"></textarea></label>
+        <div class="pane-title"><h3>答案要点与证据</h3><button id="add-point" class="quiet">新增要点</button></div>
+        <div id="answer-points"></div>
+        <div class="actions">
+          <button id="save-draft" class="quiet">保存审核草案</button>
+          <button id="save-reviewed">保存并标记人工审核完成</button>
+        </div>
+      </div>
+    </section>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>
