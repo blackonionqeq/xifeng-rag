@@ -30,14 +30,15 @@ RAG 核心、索引、模型调用、评测与 API 使用 Python。前端延后�
 |---|---|
 | Python | Python 3.11 |
 | 环境与依赖 | `uv` + `pyproject.toml` |
-| 配置与边界模型 | Pydantic v2 + pydantic-settings |
+| 配置与边界模型 | Pydantic v2 + pydantic-settings + python-dotenv |
 | 结构化状态 | SQLite + SQLAlchemy 2 + Alembic |
 | 向量存储 | Qdrant Client 本地持久化模式 |
-| 关键词检索 | `bm25s` + 中文分词 |
+| 关键词检索 | `bm25s` + `jieba` search mode（版本化封装） |
 | 离线语义分块 | Ollama standalone + `qwen3:4b-instruct-2507-q4_K_M` |
 | Embedding | 默认 `Qwen/Qwen3-Embedding-0.6B`；基线 `BAAI/bge-base-zh-v1.5` |
 | Reranker | 默认 `BAAI/bge-reranker-v2-m3`；后续对照 `Qwen/Qwen3-Reranker-0.6B` |
 | CLI | Typer |
+| 本地管理、分块审核与评测策展页 | Python 标准库 HTTP 服务 + 原生 HTML/CSS/JavaScript |
 | API | FastAPI，阶段 2 加入 |
 | 测试与质量 | pytest + Ruff + Pyright |
 | 实验分析 | 自定义指标，按需使用 Pandas/Jupyter |
@@ -45,6 +46,10 @@ RAG 核心、索引、模型调用、评测与 API 使用 Python。前端延后�
 Qdrant 第一阶段使用进程内本地持久化模式，不要求启动独立服务。后续需要并发访问或独立部署时，可以迁移到 Qdrant Server，同时保留相同的客户端边界。
 
 BM25 与 Dense 检索保持逻辑独立，通过自有 RRF 实现融合，便于保存各路原始排名和完成消融实验。
+
+V0 已采用 `jieba.Tokenizer` 的独立实例完成本地 search-mode 分词，封装版本为
+`jieba-search-v1`。该选择是可替换的基线，后续分词器对照必须创建新的 Index Profile，
+不得覆盖已有实验索引。
 
 ## 4. Generator
 
@@ -56,17 +61,28 @@ base_url: https://api.deepseek.com
 model: deepseek-v4-flash
 ```
 
-DeepSeek API 使用 OpenAI 兼容的 Chat Completions 形式。API 密钥只从环境变量或未提交的本地密钥配置读取。
+DeepSeek API 使用 OpenAI 兼容的 Chat Completions 形式。API 密钥从进程环境变量或 Git 忽略的项目根目录 `.env` 读取；进程环境优先，密钥不进入 YAML、数据库或普通日志。
 
-Generator 接口仍与具体服务商解耦。外部调用只用于交互式答案生成，不用于离线语义分块或批量 Contextual Retrieval。
+Generator 接口仍与具体服务商解耦。外部调用默认只用于交互式答案生成；语义分块仅允许通过单篇 `chunks retry`、逐次二次确认和本地审核校验使用外部 OpenAI-compatible profile，仍禁止批量外部分块和外部 Contextual Retrieval。
 
-第一阶段使用 `qwen3:4b-instruct-2507-q4_K_M` 完成离线语义分块和概括，实际上下文先设为 32K，并通过 Ollama JSON Schema 输出与 Pydantic 校验保证结构。它属于索引预处理组件，不作为本地 Generator 对外提供问答服务。
+个人用户可选 `codex-cli` 作为单篇分块 provider，复用现有 ChatGPT 登录额度。该子进程只在
+空临时目录中以 read-only、ephemeral 和 JSON Schema 约束模式运行，不加载用户配置、规则或
+MCP；它在隐私分类上仍属于外部推理，并依赖用户自己的 ChatGPT 数据控制设置。
+
+评测策展也复用同一个通用隔离 Codex CLI 客户端，默认模型为 `gpt-5.6-terra`。每次只允许
+处理人工明确选择的一篇已索引文章；页面必须先显示问题、版本、字符数、单元数、provider、
+模型和最大请求次数，再由用户在弹窗中确认。结构化输出只生成待审候选，评测冻结与运行阶段
+不自动调用 Codex。
+
+第一阶段默认使用 `qwen3:4b-instruct-2507-q4_K_M` 完成离线语义分块和概括，实际上下文先设为 32K，并通过 Ollama JSON Schema 输出与 Pydantic 校验保证结构。少数单篇重试可使用显式配置的 OpenAI-compatible 外部模型；外部 JSON mode 不能替代本地 Pydantic 与覆盖校验。这些模型都属于索引预处理组件，不作为本地 Generator 对外提供问答服务。
 
 Windows 使用官方 Ollama standalone CLI，不安装托盘应用、不注册开机启动。程序放在 `D:\ai-tools\ollama`，模型通过 `OLLAMA_MODELS` 指向 `D:\ai-models\ollama`。Ollama 服务只在离线预处理时按需启动。模型或运行后端只有在本机长文验收不达标时才替换。
 
 ## 5. 前端
 
-前端不属于第一阶段范围。核心与 API 稳定后使用 Svelte；是否需要 SvelteKit、路由框架或 UI 组件库，到阶段 3 根据实际页面需求再决定。
+正式前端不属于第一阶段范围。第一阶段只有 CLI 按需启动、固定绑定回环地址的语料管理页与
+分块审核页；它们不新增服务框架或前端构建链，也不承担通用 API 职责。核心与 API 稳定后使用 Svelte；
+是否需要 SvelteKit、路由框架或 UI 组件库，到阶段 3 根据实际页面需求再决定。
 
 FastAPI 的响应模型应保持与前端框架无关，支持返回答案、引用、检索阶段分数和隐私提示。流式生成可以在阶段 2 设计，不提前影响阶段 1 的核心接口。
 
