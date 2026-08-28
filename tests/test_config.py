@@ -126,6 +126,11 @@ def test_embedding_cache_path_and_retrieval_defaults(tmp_path: Path) -> None:
     assert settings.context_assembly.max_evidence_items == 5
     assert settings.context_assembly.max_total_chars == 50_000
     assert not settings.context_assembly.include_ai_metadata
+    assert settings.generator.provider == "deepseek"
+    assert settings.generator.base_url == "https://api.deepseek.com"
+    assert settings.generator.api_key_env == "DEEPSEEK_API_KEY"
+    assert settings.generator.model == "deepseek-v4-flash"
+    assert settings.generator.max_output_tokens == 4096
 
 
 def test_context_assembly_yaml_and_environment_settings(

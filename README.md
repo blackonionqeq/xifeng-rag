@@ -2,9 +2,9 @@
 
 面向个人购买的长篇文章，构建一个本地优先、证据驱动的主题研究工具，同时作为可复现的 RAG 学习与求职展示项目。
 
-当前已实现 V0 MVP 与 V1 本地检索主链：确定性语料清洗、本地 AI 话题分块与人工审核、
+当前已实现 V0 MVP 与 V1 单轮问答主链：确定性语料清洗、本地 AI 话题分块与人工审核、
 BM25、BGE Dense、RRF 混合检索、可显式启用的本地 Cross-Encoder 重排、确定性上下文组装、
-稳定原文引用和基础检索评测。回答生成与正式前端属于后续版本。
+DeepSeek 结构化回答、稳定原文引用和基础检索评测。正式前端与多轮对话属于后续版本。
 
 ## 当前能力
 
@@ -18,6 +18,7 @@ BM25、BGE Dense、RRF 混合检索、可显式启用的本地 Cross-Encoder 重
 - 已批准话题块上的中文 BM25、BGE Dense、RRF 混合检索和原文引用；
 - 使用 `BAAI/bge-reranker-v2-m3` 对 Hybrid 宽候选进行显式本地重排；
 - 将排序候选按数量与字符预算组装为带稳定来源的本地证据上下文；
+- 由用户显式触发 DeepSeek 单轮回答，支持结构化引用、部分回答、证据不足和模型补充分析；
 - 本地评测集工作台、Codex 辅助候选答案与人工证据范围审核；
 - 冻结语料快照上的 P@K、Recall@K、MRR、nDCG、证据覆盖与查询延迟评测。
 
@@ -50,8 +51,8 @@ DEEPSEEK_API_KEY=your-key-here
 模型名：qwen3:4b-instruct-2507-q4_K_M
 ```
 
-若路径不同，在 Git 忽略的 `config.local.yaml` 中覆盖。Ollama 只用于本地预处理；
-V0 不包含外部 Generator。
+若路径不同，在 Git 忽略的 `config.local.yaml` 中覆盖。Ollama 只用于本地预处理，不作为
+交互式 Generator。单轮问答使用显式触发的 DeepSeek API，只发送最终组装的少量证据。
 
 ## 最短流程
 
@@ -73,6 +74,9 @@ uv run xifeng search "要检索的问题" --mode bm25 --top-k 5
 uv run xifeng search "要检索的问题" --mode dense --top-k 5
 uv run xifeng search "要检索的问题" --mode hybrid --rerank --top-k 5
 uv run xifeng search "要检索的问题" --mode hybrid --rerank --assemble
+uv run xifeng generator models
+uv run xifeng ask "要研究的问题" --mode hybrid --rerank
+uv run xifeng ask "要研究的问题" --mode hybrid --rerank --supplement on
 uv run xifeng eval curate
 uv run xifeng eval run <FROZEN_DATASET_ID> --mode hybrid --k 5
 uv run xifeng eval run <FROZEN_DATASET_ID> --mode hybrid --rerank --rerank-candidate-k 20 --k 5
@@ -135,6 +139,15 @@ Index Build 上运行。旧的 JSON 文件评测入口暂时兼容保留。
 截断或改写原文。AI 话题标题与概括保留在内部结构中，但默认不进入 Generator 上下文；可通过
 `context_assembly.include_ai_metadata` 开启用于后续单变量对照，它们始终不能作为作者原话引用。
 
+`ask` 是显式的外部回答入口。调用前会显示 DeepSeek 服务地址、模型、入选证据数量、原文
+字符数和最多两次外部请求；没有证据时在本地直接拒答，不读取 API 密钥也不产生网络请求。
+回答将资料明确陈述与基于资料的推断分开，并逐段绑定有效的 `E1`、`E2` 引用。输出非法时
+只允许一次结构修复，不会静默切换模型。`--supplement auto|on|off` 控制独立标注的模型补充
+分析；该部分只能提供评价框架、风险和建议，不能凭模型记忆补充新的具体事实。
+
+DeepSeek 模型 ID 可能随账号与服务版本变化。先运行 `generator models` 查询实际可用 ID，
+再在本地配置的 `generator.model` 中设置；API 密钥仍只从进程环境或 Git 忽略的 `.env` 读取。
+
 出题范围、Top-K 约束、AI 参考答案、答案要点、证据范围和不确定性的人工审核标准，见
 [评测问题编写与 AI 草案审核指南](docs/guides/evaluation-question-writing.md)。
 
@@ -150,6 +163,7 @@ Index Build 上运行。旧的 JSON 文件评测入口暂时兼容保留。
 - [本地语料管理页设计](docs/specs/2026-08-26-corpus-management-dashboard-design.md)
 - [评测集策展与 Codex 辅助设计](docs/specs/2026-08-27-evaluation-dataset-curation-design.md)
 - [确定性上下文组装设计](docs/specs/2026-08-28-deterministic-context-assembly-design.md)
+- [DeepSeek Generator 设计](docs/specs/2026-08-28-deepseek-generator-design.md)
 - [评测问题编写与 AI 草案审核指南](docs/guides/evaluation-question-writing.md)
 - [Agent 工作约束](AGENTS.md)
 

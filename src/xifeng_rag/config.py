@@ -62,6 +62,16 @@ class ContextAssemblySettings(BaseModel):
     include_ai_metadata: bool = False
 
 
+class GeneratorSettings(BaseModel):
+    provider: str = "deepseek"
+    base_url: str = "https://api.deepseek.com"
+    api_key_env: str = Field(default="DEEPSEEK_API_KEY", min_length=1)
+    model: str = Field(default="deepseek-v4-flash", min_length=1)
+    timeout_seconds: int = Field(default=120, gt=0)
+    max_output_tokens: int = Field(default=4096, gt=0)
+    temperature: float = Field(default=0.1, ge=0, le=2)
+
+
 class OllamaSettings(BaseModel):
     executable: Path = Path("D:/ai-tools/ollama/ollama.exe")
     model_dir: Path = Path("D:/ai-models/ollama")
@@ -107,6 +117,7 @@ class Settings(BaseSettings):
     retrieval: RetrievalSettings = Field(default_factory=RetrievalSettings)
     reranker: RerankerSettings = Field(default_factory=RerankerSettings)
     context_assembly: ContextAssemblySettings = Field(default_factory=ContextAssemblySettings)
+    generator: GeneratorSettings = Field(default_factory=GeneratorSettings)
     ollama: OllamaSettings = Field(default_factory=OllamaSettings)
     chunking: ChunkingSettings = Field(default_factory=ChunkingSettings)
 

@@ -10,6 +10,7 @@ from typer.testing import CliRunner
 from xifeng_rag.cli import _latest_pending_version_ids, app
 from xifeng_rag.domain import RetrievalCandidate, RetrievalScores, VersionStatus
 from xifeng_rag.storage import ArticleRow, ArticleVersionRow, ChunkProposalRow, Database
+from xifeng_rag.structured_generation import GenerationResult
 
 runner = CliRunner()
 
@@ -201,6 +202,116 @@ def test_search_assemble_json_uses_local_ranked_candidates(
     assert payload["evidence_items"][0]["citation_id"] == "E1"
     assert payload["evidence_items"][0]["original_text"] == private_body
     assert "AI 话题" not in payload["rendered_context"]
+
+
+def test_ask_without_evidence_does_not_require_key_or_network(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        f"project_root: {tmp_path.as_posix()}\nstorage:\n  data_dir: data\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setattr("xifeng_rag.cli.search", lambda *args, **kwargs: [])
+
+    def forbid_network(*args, **kwargs):
+        raise AssertionError("无证据时不得调用外部 Generator")
+
+    monkeypatch.setattr("urllib.request.urlopen", forbid_network)
+    result = runner.invoke(
+        app,
+        ["--config", str(config), "ask", "无法回答的问题", "--mode", "bm25"],
+    )
+
+    assert result.exit_code == 0
+    assert "现有资料不足以回答" in result.stdout
+    assert "本次检索未找到" in result.stdout
+    assert "即将把" not in result.stderr
+
+
+def test_ask_discloses_scope_and_returns_validated_json(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        f"project_root: {tmp_path.as_posix()}\n"
+        "storage:\n  data_dir: data\n"
+        "generator:\n  model: test-model\n",
+        encoding="utf-8",
+    )
+    private_body = "只发送给 Generator 的自造证据"
+
+    def fake_search(*args, **kwargs):
+        del args, kwargs
+        return [
+            RetrievalCandidate(
+                chunk_id="chunk-1",
+                article_id="article-1",
+                article_version="version-1",
+                article_title="自造文章",
+                original_text=private_body,
+                paragraph_range=(1, 1),
+                retrieval_scores=RetrievalScores(bm25=1.0, bm25_rank=1),
+                source=["bm25"],
+            )
+        ]
+
+    class FakeDeepSeekClient:
+        def __init__(self, settings, api_key):
+            assert settings.model == "test-model"
+            assert api_key == "test-key"
+
+        def generate(self, prompt, schema):
+            assert private_body in prompt
+            assert schema["type"] == "object"
+            return GenerationResult(
+                content=json.dumps(
+                    {
+                        "status": "answered",
+                        "grounded_sections": [
+                            {
+                                "text": "资料给出了可验证结论。",
+                                "statement_type": "source_statement",
+                                "evidence_ids": ["E1"],
+                            }
+                        ],
+                        "supplementary_analysis": None,
+                        "limitations": [],
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    monkeypatch.setattr("xifeng_rag.cli.search", fake_search)
+    monkeypatch.setattr("xifeng_rag.cli.DeepSeekClient", FakeDeepSeekClient)
+    result = runner.invoke(
+        app,
+        [
+            "--config",
+            str(config),
+            "ask",
+            "测试问题",
+            "--mode",
+            "bm25",
+            "--supplement",
+            "off",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["answer"]["status"] == "answered"
+    assert payload["request_count"] == 1
+    assert payload["provider_id"] == "deepseek"
+    assert payload["model_id"] == "test-model"
+    assert payload["sources"][0]["citation_id"] == "E1"
+    assert "test-model" in result.stderr
+    assert "1 块" in result.stderr
+    assert "最大外部请求次数：2" in result.stderr
+    assert private_body not in result.stderr
 
 
 def test_chunk_proposal_selection_uses_only_latest_active_version(

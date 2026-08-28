@@ -67,7 +67,9 @@ V0 已采用 `jieba.Tokenizer` 的独立实例完成本地 search-mode 分词，
 
 ## 4. Generator
 
-第一阶段只实现 DeepSeek API 适配器：
+第一阶段只实现 DeepSeek API 适配器。模型 ID 必须通过配置指定，并可使用
+`xifeng generator models` 查询当前账号实际可用的模型；下面的名称是项目目标配置，不作为
+业务代码中的永久常量：
 
 ```text
 provider: deepseek
@@ -76,6 +78,10 @@ model: deepseek-v4-flash
 ```
 
 DeepSeek API 使用 OpenAI 兼容的 Chat Completions 形式。API 密钥从进程环境变量或 Git 忽略的项目根目录 `.env` 读取；进程环境优先，密钥不进入 YAML、数据库或普通日志。
+
+回答使用 JSON Output 加本地 Pydantic 与引用 ID 校验。一次问答最多执行首次生成和一次格式
+修复，不启用隐藏的 SDK 自动重试或 provider 回退。用户可见 Markdown 与原文来源由本地程序
+确定性渲染；没有证据时不调用 API。
 
 Generator 接口仍与具体服务商解耦。外部调用默认只用于交互式答案生成；语义分块仅允许通过单篇 `chunks retry`、逐次二次确认和本地审核校验使用外部 OpenAI-compatible profile，仍禁止批量外部分块和外部 Contextual Retrieval。
 

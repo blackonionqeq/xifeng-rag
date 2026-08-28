@@ -28,6 +28,7 @@ from xifeng_rag.corpus import discover_markdown, scan_corpus
 from xifeng_rag.corpus_ui import run_corpus_dashboard
 from xifeng_rag.domain import (
     AssemblyResult,
+    AssemblyStatus,
     BuildStatus,
     ContextAssemblyConfigSnapshot,
     ProposalStatus,
@@ -36,6 +37,16 @@ from xifeng_rag.domain import (
 )
 from xifeng_rag.evaluation import run_evaluation, run_frozen_evaluation
 from xifeng_rag.evaluation_ui import run_evaluation_server
+from xifeng_rag.generation import (
+    AnswerGenerationResult,
+    AnswerStatus,
+    DeepSeekClient,
+    EvidenceBoundGenerator,
+    GeneratedAnswer,
+    SupplementPolicy,
+    cited_evidence,
+    render_answer,
+)
 from xifeng_rag.indexing import (
     IndexBuildError,
     SentenceTransformersEmbeddingProvider,
@@ -60,10 +71,12 @@ corpus_app = typer.Typer(help="语料扫描与清洗")
 chunks_app = typer.Typer(help="话题分块与审核")
 index_app = typer.Typer(help="BM25 索引")
 eval_app = typer.Typer(help="检索评测")
+generator_app = typer.Typer(help="外部回答 Generator 诊断")
 app.add_typer(corpus_app, name="corpus")
 app.add_typer(chunks_app, name="chunks")
 app.add_typer(index_app, name="index")
 app.add_typer(eval_app, name="eval")
+app.add_typer(generator_app, name="generator")
 
 
 @dataclass
@@ -209,6 +222,32 @@ def _echo_assembly(result: AssemblyResult) -> None:
             f"reason={item.reason.value} rendered_chars={item.rendered_chars}"
         )
     typer.echo(f"上下文 SHA-256：{result.rendered_context_sha256}")
+
+
+def _answer_json(result: AnswerGenerationResult, context: AssemblyResult) -> str:
+    sources = []
+    for item in cited_evidence(result.answer, context):
+        excerpt = item.original_text[:240].replace("\n", " ")
+        if len(item.original_text) > 240:
+            excerpt += "…"
+        sources.append(
+            {
+                "citation_id": item.citation_id,
+                "article_title": item.article_title,
+                "article_version": item.article_version,
+                "paragraph_range": list(item.selected_paragraph_range),
+                "original_text_excerpt": excerpt,
+            }
+        )
+    return json.dumps(
+        {
+            **result.model_dump(mode="json"),
+            "rendered_answer": render_answer(result.answer, context),
+            "sources": sources,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
 
 
 @app.command("init")
@@ -716,6 +755,117 @@ def search_command(
             reranker.close()
         if provider is not None:
             provider.close()
+
+
+@app.command("ask")
+def ask_command(
+    ctx: typer.Context,
+    question: str,
+    top_k: Annotated[int, typer.Option("--top-k", min=1, max=100)] = 5,
+    mode: Annotated[RetrievalMode | None, typer.Option("--mode")] = None,
+    build: Annotated[str | None, typer.Option("--build")] = None,
+    rerank: Annotated[
+        bool, typer.Option("--rerank", help="启用本地 Cross-Encoder 重排")
+    ] = False,
+    rerank_candidate_k: Annotated[
+        int | None,
+        typer.Option("--rerank-candidate-k", min=1, max=1000, help="覆盖重排候选深度"),
+    ] = None,
+    supplement: Annotated[
+        SupplementPolicy,
+        typer.Option("--supplement", help="模型补充分析策略：auto、on 或 off"),
+    ] = SupplementPolicy.AUTO,
+    as_json: Annotated[bool, typer.Option("--json", help="输出结构化回答")] = False,
+) -> None:
+    """检索本地证据，并显式调用外部 DeepSeek 生成带引用的单轮回答。"""
+    runtime = _runtime(ctx)
+    provider = None
+    reranker = None
+    try:
+        if rerank_candidate_k is not None and not rerank:
+            raise ValueError("--rerank-candidate-k 只能与 --rerank 一起使用")
+        selected_mode = _resolved_retrieval_mode(runtime, mode, build)
+        if rerank and selected_mode != RetrievalMode.HYBRID:
+            raise ValueError("--rerank 第一版只支持 --mode hybrid")
+        if selected_mode in {RetrievalMode.DENSE, RetrievalMode.HYBRID}:
+            provider = _embedding_provider(runtime.settings)
+        if rerank:
+            reranker = _reranker_provider(runtime.settings)
+        with runtime.database.session() as session:
+            candidates = search(
+                session,
+                question,
+                top_k,
+                build_id=build,
+                mode=selected_mode,
+                embedding_provider=provider,
+                bm25_candidate_k=runtime.settings.retrieval.bm25_candidate_k,
+                dense_candidate_k=runtime.settings.retrieval.dense_candidate_k,
+                rrf_k=runtime.settings.retrieval.rrf_k,
+                reranker=reranker,
+                rerank_candidate_k=(
+                    rerank_candidate_k or runtime.settings.reranker.candidate_k
+                ),
+            )
+        context = assemble_context(candidates, _assembly_config(runtime.settings))
+        if context.status == AssemblyStatus.NO_EVIDENCE:
+            result = AnswerGenerationResult(
+                answer=GeneratedAnswer(
+                    status=AnswerStatus.INSUFFICIENT_EVIDENCE,
+                    limitations=["本次检索未找到可用于回答的证据。"],
+                ),
+                request_count=0,
+            )
+        else:
+            settings = runtime.settings.generator
+            if settings.provider != "deepseek":
+                raise ValueError(f"不支持的 Generator provider：{settings.provider}")
+            api_key = os.environ.get(settings.api_key_env)
+            if not api_key:
+                raise ValueError(f"环境变量未设置：{settings.api_key_env}")
+            typer.echo("即将把最终入选的少量证据发送给外部 Generator：", err=True)
+            typer.echo(f"  服务：DeepSeek  {settings.base_url}", err=True)
+            typer.echo(f"  模型：{settings.model}", err=True)
+            typer.echo(
+                f"  证据：{context.usage.selected_count} 块，"
+                f"原文 {context.usage.original_text_chars} 字符",
+                err=True,
+            )
+            typer.echo("  最大外部请求次数：2", err=True)
+            generator = EvidenceBoundGenerator(
+                DeepSeekClient(settings, api_key),
+                provider_id="deepseek",
+                model_id=settings.model,
+            )
+            result = generator.generate(question, context, supplement)
+        if as_json:
+            typer.echo(_answer_json(result, context))
+        else:
+            typer.echo(render_answer(result.answer, context))
+    except Exception as exc:
+        _abort(exc)
+    finally:
+        if reranker is not None:
+            reranker.close()
+        if provider is not None:
+            provider.close()
+
+
+@generator_app.command("models")
+def generator_models(ctx: typer.Context) -> None:
+    """查询当前 DeepSeek 账号可用的模型 ID；不发送问题或语料。"""
+    runtime = _runtime(ctx)
+    try:
+        settings = runtime.settings.generator
+        if settings.provider != "deepseek":
+            raise ValueError(f"不支持的 Generator provider：{settings.provider}")
+        api_key = os.environ.get(settings.api_key_env)
+        if not api_key:
+            raise ValueError(f"环境变量未设置：{settings.api_key_env}")
+        for model_id in DeepSeekClient(settings, api_key).list_models():
+            typer.echo(model_id)
+    except Exception as exc:
+        _abort(exc)
 
 
 @eval_app.command("run")

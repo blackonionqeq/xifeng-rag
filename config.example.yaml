@@ -30,6 +30,15 @@ context_assembly:
   max_evidence_items: 5
   max_total_chars: 50000
   include_ai_metadata: false
+generator:
+  provider: deepseek
+  base_url: https://api.deepseek.com
+  api_key_env: DEEPSEEK_API_KEY
+  # 运行 `uv run xifeng generator models` 核对当前账号实际可用的模型 ID。
+  model: deepseek-v4-flash
+  timeout_seconds: 120
+  max_output_tokens: 4096
+  temperature: 0.1
 ollama:
   executable: D:/ai-tools/ollama/ollama.exe
   model_dir: D:/ai-models/ollama
