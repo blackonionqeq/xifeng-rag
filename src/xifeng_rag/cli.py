@@ -36,6 +36,7 @@ from xifeng_rag.indexing import (
     record_build_failure,
     search,
 )
+from xifeng_rag.reranking import SentenceTransformersReranker
 from xifeng_rag.review_ui import IndexBuilder, run_review_server
 from xifeng_rag.storage import (
     ArticleRow,
@@ -74,6 +75,19 @@ def _embedding_provider(settings: Settings) -> SentenceTransformersEmbeddingProv
         batch_size=settings.embedding.batch_size,
         normalize_embeddings=settings.embedding.normalize_embeddings,
         query_instruction=settings.embedding.query_instruction,
+    )
+
+
+def _reranker_provider(settings: Settings) -> SentenceTransformersReranker:
+    if settings.reranker.provider != "sentence-transformers":
+        raise ValueError(f"不支持的 Reranker provider：{settings.reranker.provider}")
+    return SentenceTransformersReranker(
+        settings.reranker.model_id,
+        revision=settings.reranker.model_revision,
+        cache_dir=settings.reranker_cache_dir,
+        device=settings.reranker.device,
+        batch_size=settings.reranker.batch_size,
+        max_pair_tokens=settings.reranker.max_pair_tokens,
     )
 
 
@@ -588,15 +602,27 @@ def search_command(
     top_k: Annotated[int, typer.Option("--top-k", min=1, max=100)] = 5,
     mode: Annotated[RetrievalMode | None, typer.Option("--mode")] = None,
     build: Annotated[str | None, typer.Option("--build")] = None,
+    rerank: Annotated[bool, typer.Option("--rerank", help="启用本地 Cross-Encoder 重排")] = False,
+    rerank_candidate_k: Annotated[
+        int | None,
+        typer.Option("--rerank-candidate-k", min=1, max=1000, help="覆盖重排候选深度"),
+    ] = None,
     as_json: Annotated[bool, typer.Option("--json", help="输出完整结构化候选")] = False,
 ) -> None:
     """搜索已批准话题块并展示原文引用。"""
     runtime = _runtime(ctx)
     provider = None
+    reranker = None
     try:
+        if rerank_candidate_k is not None and not rerank:
+            raise ValueError("--rerank-candidate-k 只能与 --rerank 一起使用")
         selected_mode = _resolved_retrieval_mode(runtime, mode, build)
+        if rerank and selected_mode != RetrievalMode.HYBRID:
+            raise ValueError("--rerank 第一版只支持 --mode hybrid")
         if selected_mode in {RetrievalMode.DENSE, RetrievalMode.HYBRID}:
             provider = _embedding_provider(runtime.settings)
+        if rerank:
+            reranker = _reranker_provider(runtime.settings)
         with runtime.database.session() as session:
             candidates = search(
                 session,
@@ -608,6 +634,10 @@ def search_command(
                 bm25_candidate_k=runtime.settings.retrieval.bm25_candidate_k,
                 dense_candidate_k=runtime.settings.retrieval.dense_candidate_k,
                 rrf_k=runtime.settings.retrieval.rrf_k,
+                reranker=reranker,
+                rerank_candidate_k=(
+                    rerank_candidate_k or runtime.settings.reranker.candidate_k
+                ),
             )
         if as_json:
             typer.echo(
@@ -616,7 +646,9 @@ def search_command(
             return
         for rank, item in enumerate(candidates, start=1):
             snippet = item.original_text[:240].replace("\n", " ")
-            score = item.retrieval_scores.rrf
+            score = item.retrieval_scores.reranker
+            if score is None:
+                score = item.retrieval_scores.rrf
             if score is None:
                 score = item.retrieval_scores.dense
             if score is None:
@@ -629,6 +661,8 @@ def search_command(
     except Exception as exc:
         _abort(exc)
     finally:
+        if reranker is not None:
+            reranker.close()
         if provider is not None:
             provider.close()
 
@@ -642,19 +676,31 @@ def eval_run(
         str | None, typer.Option("--build", help="指定兼容冻结快照的 Index Build")
     ] = None,
     mode: Annotated[RetrievalMode | None, typer.Option("--mode")] = None,
+    rerank: Annotated[bool, typer.Option("--rerank", help="启用本地 Cross-Encoder 重排")] = False,
+    rerank_candidate_k: Annotated[
+        int | None,
+        typer.Option("--rerank-candidate-k", min=1, max=1000, help="覆盖重排候选深度"),
+    ] = None,
 ) -> None:
     """运行冻结检索评测集。"""
     runtime = _runtime(ctx)
     provider = None
+    reranker = None
     try:
+        if rerank_candidate_k is not None and not rerank:
+            raise ValueError("--rerank-candidate-k 只能与 --rerank 一起使用")
         legacy_path = Path(evalset)
         selected_mode = (
             RetrievalMode.BM25
             if legacy_path.is_file()
             else _resolved_retrieval_mode(runtime, mode, build)
         )
+        if rerank and selected_mode != RetrievalMode.HYBRID:
+            raise ValueError("--rerank 第一版只支持 --mode hybrid 的冻结评测")
         if selected_mode in {RetrievalMode.DENSE, RetrievalMode.HYBRID}:
             provider = _embedding_provider(runtime.settings)
+        if rerank:
+            reranker = _reranker_provider(runtime.settings)
         with runtime.database.session() as session:
             outcome = (
                 run_evaluation(session, legacy_path.resolve(), k)
@@ -669,12 +715,18 @@ def eval_run(
                     bm25_candidate_k=runtime.settings.retrieval.bm25_candidate_k,
                     dense_candidate_k=runtime.settings.retrieval.dense_candidate_k,
                     rrf_k=runtime.settings.retrieval.rrf_k,
+                    reranker=reranker,
+                    rerank_candidate_k=(
+                        rerank_candidate_k or runtime.settings.reranker.candidate_k
+                    ),
                 )
             )
         typer.echo(json.dumps(outcome, ensure_ascii=False, indent=2))
     except Exception as exc:
         _abort(exc)
     finally:
+        if reranker is not None:
+            reranker.close()
         if provider is not None:
             provider.close()
 

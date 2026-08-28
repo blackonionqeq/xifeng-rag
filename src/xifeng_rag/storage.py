@@ -10,6 +10,7 @@ from alembic.config import Config
 from sqlalchemy import (
     Boolean,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     String,
@@ -145,6 +146,23 @@ class EvaluationRunRow(Base):
     bm25_candidate_k: Mapped[int | None] = mapped_column(Integer, nullable=True)
     dense_candidate_k: Mapped[int | None] = mapped_column(Integer, nullable=True)
     rrf_k: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reranker_enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    reranker_provider: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reranker_model_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reranker_model_revision: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reranker_device: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reranker_batch_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reranker_max_pair_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reranker_candidate_k: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reranker_input_template_version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reranker_load_duration_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    reranker_truncated_candidate_count: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    reranker_process_memory_delta_bytes: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    reranker_cuda_peak_memory_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

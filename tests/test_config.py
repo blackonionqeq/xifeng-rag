@@ -120,3 +120,16 @@ def test_embedding_cache_path_and_retrieval_defaults(tmp_path: Path) -> None:
     assert settings.retrieval.bm25_candidate_k == 5
     assert settings.retrieval.dense_candidate_k == 5
     assert settings.retrieval.rrf_k == 60
+    assert settings.reranker.model_id == "BAAI/bge-reranker-v2-m3"
+    assert settings.reranker.max_pair_tokens == 1024
+    assert settings.reranker.candidate_k == 20
+
+
+def test_reranker_cache_path_resolves_from_project_root(tmp_path: Path) -> None:
+    config = tmp_path / "settings.yaml"
+    config.write_text(
+        "project_root: .\nreranker:\n  model_cache_dir: models/reranker\n",
+        encoding="utf-8",
+    )
+    settings = load_settings(config)
+    assert settings.reranker_cache_dir == (tmp_path / "models/reranker").resolve()

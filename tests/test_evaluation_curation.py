@@ -12,7 +12,7 @@ import pytest
 from sqlalchemy import func, inspect, select
 
 from xifeng_rag.config import CodexCliSettings
-from xifeng_rag.domain import RetrievalCandidate, RetrievalScores
+from xifeng_rag.domain import RetrievalCandidate, RetrievalMode, RetrievalScores
 from xifeng_rag.evaluation import run_frozen_evaluation
 from xifeng_rag.evaluation_curation import (
     AnswerPoint,
@@ -279,6 +279,11 @@ def test_fresh_database_has_evaluation_curation_schema(database: Database) -> No
         "bm25_candidate_k",
         "dense_candidate_k",
         "rrf_k",
+        "reranker_enabled",
+        "reranker_model_id",
+        "reranker_max_pair_tokens",
+        "reranker_candidate_k",
+        "reranker_truncated_candidate_count",
     } <= run_columns
 
 
@@ -333,6 +338,79 @@ def test_frozen_evaluation_maps_ranges_and_checks_snapshot(
         build.corpus_snapshot = "d" * 64
     with database.session() as session, pytest.raises(ValueError, match="语料快照"):
         run_frozen_evaluation(session, dataset_id, k=1)
+
+
+def test_frozen_evaluation_records_reranker_metadata(
+    database: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset_id, question_id = _draft_question(database, tmp_path)
+    with database.session() as session:
+        save_reviewed_answer(session, question_id, _review_value())
+        freeze_dataset(session, dataset_id)
+
+    def fake_search(session, query: str, top_k: int, build_id: str | None = None, **kwargs):
+        del session, query, top_k, build_id, kwargs
+        return [
+            RetrievalCandidate(
+                chunk_id="chunk_eval_1",
+                article_id="article_eval_test",
+                article_version="version_eval_test",
+                article_title="自造评测文章",
+                original_text="不写入运行详情的自造原文",
+                paragraph_range=(1, 2),
+                retrieval_scores=RetrievalScores(
+                    rrf=0.1,
+                    rrf_rank=1,
+                    reranker=0.9,
+                    reranker_rank=1,
+                    reranker_truncated=True,
+                ),
+            )
+        ]
+
+    class MetadataReranker:
+        @property
+        def metadata(self) -> dict[str, object]:
+            return {
+                "provider": "fake",
+                "model_id": "fake-reranker",
+                "model_revision": "test-revision",
+                "device": "cpu",
+                "batch_size": 2,
+                "max_pair_tokens": 128,
+                "input_template_version": "test-template",
+                "load_duration_ms": 12.5,
+                "truncated_candidate_count": 1,
+                "process_memory_delta_bytes": 1024,
+                "cuda_peak_memory_bytes": None,
+            }
+
+        def rerank(self, query, candidates):
+            raise AssertionError("search 已替换，不应直接调用")
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("xifeng_rag.evaluation.search", fake_search)
+    with database.session() as session:
+        outcome = run_frozen_evaluation(
+            session,
+            dataset_id,
+            k=1,
+            mode=RetrievalMode.HYBRID,
+            reranker=MetadataReranker(),
+            rerank_candidate_k=7,
+        )
+        assert outcome["reranker"]["model_id"] == "fake-reranker"  # type: ignore[index]
+    with database.session() as session:
+        run = session.scalar(select(EvaluationRunRow))
+        assert run is not None
+        assert run.reranker_enabled is True
+        assert run.reranker_model_id == "fake-reranker"
+        assert run.reranker_candidate_k == 7
+        assert run.reranker_max_pair_tokens == 128
+        assert run.reranker_truncated_candidate_count == 1
+        assert "自造原文" not in run.details_json
 
 
 def test_evaluation_http_requires_token_and_does_not_send_without_confirmation(

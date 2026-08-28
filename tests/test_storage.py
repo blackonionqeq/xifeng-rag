@@ -75,5 +75,11 @@ def test_evaluation_curation_migration_preserves_existing_runs(tmp_path: Path) -
 
     columns = {item["name"] for item in inspect(database.engine).get_columns("evaluation_runs")}
     assert {"dataset_content_hash", "corpus_snapshot", "profile_id", "k"} <= columns
+    assert {
+        "reranker_enabled",
+        "reranker_model_id",
+        "reranker_candidate_k",
+        "reranker_max_pair_tokens",
+    } <= columns
     with database.engine.connect() as migrated:
         assert migrated.execute(text("SELECT COUNT(*) FROM evaluation_runs")).scalar_one() == 1

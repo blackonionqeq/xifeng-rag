@@ -109,6 +109,10 @@ class RetrievalScores(BaseModel):
     dense: float | None = None
     dense_rank: int | None = Field(default=None, ge=1)
     rrf: float | None = None
+    rrf_rank: int | None = Field(default=None, ge=1)
+    reranker: float | None = None
+    reranker_rank: int | None = Field(default=None, ge=1)
+    reranker_truncated: bool | None = None
 
 
 class RetrievalCandidate(BaseModel):

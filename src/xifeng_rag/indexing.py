@@ -28,6 +28,7 @@ from xifeng_rag.domain import (
     RetrievalScores,
     VersionStatus,
 )
+from xifeng_rag.reranking import Reranker, rerank_candidates
 from xifeng_rag.storage import ArticleRow, ArticleVersionRow, IndexBuildRow, TopicChunkRow
 
 TOKENIZER_VERSION = "jieba-search-v1"
@@ -612,6 +613,8 @@ def search(
     bm25_candidate_k: int = 5,
     dense_candidate_k: int = 5,
     rrf_k: int = 60,
+    reranker: Reranker | None = None,
+    rerank_candidate_k: int = 20,
 ) -> list[RetrievalCandidate]:
     if not query.strip():
         raise ValueError("查询不能为空")
@@ -635,7 +638,11 @@ def search(
     if not build_path.is_dir():
         raise FileNotFoundError(f"活动索引目录不存在：{build_path}")
     selected_mode = RetrievalMode(mode)
-    candidate_floor = top_k
+    if reranker is not None and selected_mode != RetrievalMode.HYBRID:
+        raise ValueError("Reranker 第一版只支持 hybrid 检索模式")
+    if rerank_candidate_k <= 0:
+        raise ValueError("rerank_candidate_k 必须大于 0")
+    candidate_floor = max(top_k, rerank_candidate_k) if reranker is not None else top_k
     bm25_hits = (
         _bm25_search(build_path, query, max(candidate_floor, bm25_candidate_k))
         if selected_mode in {RetrievalMode.BM25, RetrievalMode.HYBRID}
@@ -659,7 +666,7 @@ def search(
     else:
         fused = reciprocal_rank_fusion(bm25_hits, dense_hits, rrf_k)
     candidates: list[RetrievalCandidate] = []
-    for hit in fused[:top_k]:
+    for rrf_rank, hit in enumerate(fused[:candidate_floor], start=1):
         chunk = session.get(TopicChunkRow, hit.chunk_id)
         if chunk is None:
             raise RuntimeError(f"索引引用了不存在的话题块：{hit.chunk_id}")
@@ -686,10 +693,13 @@ def search(
                     dense=hit.dense.score if hit.dense is not None else None,
                     dense_rank=hit.dense.rank if hit.dense is not None else None,
                     rrf=hit.rrf_score if selected_mode == RetrievalMode.HYBRID else None,
+                    rrf_rank=rrf_rank if selected_mode == RetrievalMode.HYBRID else None,
                 ),
                 source=sources,
                 topic_title=chunk.topic_title,
                 context_summary=chunk.context_summary,
             )
         )
-    return candidates
+    if reranker is not None:
+        return rerank_candidates(query, candidates, reranker, top_k)
+    return candidates[:top_k]

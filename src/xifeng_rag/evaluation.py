@@ -5,6 +5,7 @@ import math
 import statistics
 import subprocess
 import time
+from collections.abc import Mapping
 from pathlib import Path
 
 from pydantic import BaseModel, Field, model_validator
@@ -14,6 +15,7 @@ from sqlalchemy.orm import Session
 from xifeng_rag.corpus import stable_id
 from xifeng_rag.domain import RetrievalMode
 from xifeng_rag.indexing import EmbeddingProvider, search
+from xifeng_rag.reranking import Reranker
 from xifeng_rag.storage import (
     EvaluationDatasetRow,
     EvaluationEvidenceRow,
@@ -125,6 +127,8 @@ def run_frozen_evaluation(
     bm25_candidate_k: int = 5,
     dense_candidate_k: int = 5,
     rrf_k: int = 60,
+    reranker: Reranker | None = None,
+    rerank_candidate_k: int = 20,
 ) -> dict[str, object]:
     if k <= 0:
         raise ValueError("k 必须大于 0")
@@ -191,6 +195,8 @@ def run_frozen_evaluation(
             bm25_candidate_k=bm25_candidate_k,
             dense_candidate_k=dense_candidate_k,
             rrf_k=rrf_k,
+            reranker=reranker,
+            rerank_candidate_k=rerank_candidate_k,
         )
         latency_ms = (time.perf_counter() - started) * 1000
         ranked = [item.chunk_id for item in candidates]
@@ -242,6 +248,8 @@ def run_frozen_evaluation(
     ]
     run_id = stable_id("eval", dataset.id, build.id, str(time.time_ns()), length=32)
     code_commit, worktree_dirty = _git_state()
+    reranker_metadata = reranker.metadata if reranker is not None else {}
+    truncated_count = _metadata_int(reranker_metadata, "truncated_candidate_count") or 0
     session.add(
         EvaluationRunRow(
             id=run_id,
@@ -259,14 +267,53 @@ def run_frozen_evaluation(
             bm25_candidate_k=bm25_candidate_k,
             dense_candidate_k=dense_candidate_k,
             rrf_k=rrf_k,
+            reranker_enabled=reranker is not None,
+            reranker_provider=_metadata_text(reranker_metadata, "provider"),
+            reranker_model_id=_metadata_text(reranker_metadata, "model_id"),
+            reranker_model_revision=_metadata_text(reranker_metadata, "model_revision"),
+            reranker_device=_metadata_text(reranker_metadata, "device"),
+            reranker_batch_size=_metadata_int(reranker_metadata, "batch_size"),
+            reranker_max_pair_tokens=_metadata_int(reranker_metadata, "max_pair_tokens"),
+            reranker_candidate_k=rerank_candidate_k if reranker is not None else None,
+            reranker_input_template_version=_metadata_text(
+                reranker_metadata, "input_template_version"
+            ),
+            reranker_load_duration_ms=_metadata_float(
+                reranker_metadata, "load_duration_ms"
+            ),
+            reranker_truncated_candidate_count=(
+                truncated_count if reranker is not None else None
+            ),
+            reranker_process_memory_delta_bytes=_metadata_int(
+                reranker_metadata, "process_memory_delta_bytes"
+            ),
+            reranker_cuda_peak_memory_bytes=_metadata_int(
+                reranker_metadata, "cuda_peak_memory_bytes"
+            ),
         )
     )
     return {
         "run_id": run_id,
         "dataset_id": dataset.id,
         "retrieval_mode": str(RetrievalMode(mode)),
+        "reranker": reranker_metadata if reranker is not None else None,
         "metrics": metrics,
     }
+
+
+def _metadata_text(metadata: Mapping[str, object], key: str) -> str | None:
+    value = metadata.get(key)
+    return None if value is None else str(value)
+
+
+def _metadata_int(metadata: Mapping[str, object], key: str) -> int | None:
+    value = metadata.get(key)
+    return int(value) if isinstance(value, (int, float)) else None
+
+
+def _metadata_float(metadata: Mapping[str, object], key: str) -> float | None:
+    value = metadata.get(key)
+    return float(value) if isinstance(value, (int, float)) else None
 
 
 def run_evaluation(session: Session, dataset_path: Path, k: int = 5) -> dict[str, object]:

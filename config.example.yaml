@@ -17,6 +17,15 @@ retrieval:
   bm25_candidate_k: 5
   dense_candidate_k: 5
   rrf_k: 60
+reranker:
+  provider: sentence-transformers
+  model_id: BAAI/bge-reranker-v2-m3
+  model_revision: null
+  model_cache_dir: null
+  device: auto
+  batch_size: 8
+  max_pair_tokens: 1024
+  candidate_k: 20
 ollama:
   executable: D:/ai-tools/ollama/ollama.exe
   model_dir: D:/ai-models/ollama

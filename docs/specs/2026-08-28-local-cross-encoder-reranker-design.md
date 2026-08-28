@@ -1,7 +1,7 @@
 # 本地 Cross-Encoder 重排设计
 
 日期：2026-08-28  
-状态：已确认，待实现
+状态：已确认，实现中
 
 ## 目标
 
@@ -161,6 +161,9 @@ CLI 增加显式 `--rerank`：
 xifeng search "问题" --mode hybrid --rerank
 xifeng eval run <FROZEN_DATASET_ID> --mode hybrid --rerank
 ```
+
+两条命令均支持 `--rerank-candidate-k N` 覆盖单次运行的候选深度；覆盖值必须进入冻结评测
+元数据，不能改变 Index Profile。
 
 没有 `--rerank` 时不加载模型，保持现有输出和延迟特征。显式启用但模式不是 Hybrid 时立即
 拒绝，并给出清晰错误。候选深度和输入预算可以通过本地配置调整；每次评测保存解析后的

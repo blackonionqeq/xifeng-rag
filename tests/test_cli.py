@@ -101,6 +101,53 @@ def test_search_without_index_gives_next_command(tmp_path: Path) -> None:
     assert "xifeng index build" in result.output
 
 
+def test_search_reranker_requires_hybrid_mode(tmp_path: Path) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        f"project_root: {tmp_path.as_posix()}\nstorage:\n  data_dir: data\n",
+        encoding="utf-8",
+    )
+    result = runner.invoke(
+        app, ["--config", str(config), "search", "问题", "--mode", "bm25", "--rerank"]
+    )
+    assert result.exit_code == 1
+    assert "只支持 --mode hybrid" in result.output
+
+
+def test_rerank_candidate_depth_option_is_validated_by_cli(tmp_path: Path) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        f"project_root: {tmp_path.as_posix()}\nstorage:\n  data_dir: data\n",
+        encoding="utf-8",
+    )
+    result = runner.invoke(
+        app,
+        [
+            "--config",
+            str(config),
+            "search",
+            "问题",
+            "--rerank-candidate-k",
+            "0",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "0" in result.output
+    result = runner.invoke(
+        app,
+        [
+            "--config",
+            str(config),
+            "search",
+            "问题",
+            "--rerank-candidate-k",
+            "10",
+        ],
+    )
+    assert result.exit_code == 1
+    assert "只能与 --rerank 一起使用" in result.output
+
+
 def test_chunk_proposal_selection_uses_only_latest_active_version(
     database: Database,
 ) -> None:

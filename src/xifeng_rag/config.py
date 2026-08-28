@@ -45,6 +45,17 @@ class RetrievalSettings(BaseModel):
     rrf_k: int = Field(default=60, gt=0)
 
 
+class RerankerSettings(BaseModel):
+    provider: str = "sentence-transformers"
+    model_id: str = "BAAI/bge-reranker-v2-m3"
+    model_revision: str | None = None
+    model_cache_dir: Path | None = None
+    device: str = "auto"
+    batch_size: int = Field(default=8, gt=0)
+    max_pair_tokens: int = Field(default=1024, gt=0)
+    candidate_k: int = Field(default=20, gt=0, le=1000)
+
+
 class OllamaSettings(BaseModel):
     executable: Path = Path("D:/ai-tools/ollama/ollama.exe")
     model_dir: Path = Path("D:/ai-models/ollama")
@@ -88,6 +99,7 @@ class Settings(BaseSettings):
     storage: StorageSettings = Field(default_factory=StorageSettings)
     embedding: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
     retrieval: RetrievalSettings = Field(default_factory=RetrievalSettings)
+    reranker: RerankerSettings = Field(default_factory=RerankerSettings)
     ollama: OllamaSettings = Field(default_factory=OllamaSettings)
     chunking: ChunkingSettings = Field(default_factory=ChunkingSettings)
 
@@ -114,6 +126,11 @@ class Settings(BaseSettings):
     @property
     def embedding_cache_dir(self) -> Path | None:
         path = self.embedding.model_cache_dir
+        return self._resolve(path) if path is not None else None
+
+    @property
+    def reranker_cache_dir(self) -> Path | None:
+        path = self.reranker.model_cache_dir
         return self._resolve(path) if path is not None else None
 
     def _resolve(self, path: Path) -> Path:

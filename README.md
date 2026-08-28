@@ -2,9 +2,9 @@
 
 面向个人购买的长篇文章，构建一个本地优先、证据驱动的主题研究工具，同时作为可复现的 RAG 学习与求职展示项目。
 
-当前已实现 V0 MVP 与 V1 混合召回基线：确定性语料清洗、本地 AI 话题分块与人工审核、
-BM25、BGE Dense、RRF 混合检索、稳定原文引用和基础检索评测。重排、回答生成与正式前端
-属于后续版本。
+当前已实现 V0 MVP 与 V1 本地检索主链：确定性语料清洗、本地 AI 话题分块与人工审核、
+BM25、BGE Dense、RRF 混合检索、可显式启用的本地 Cross-Encoder 重排、稳定原文引用和
+基础检索评测。回答生成与正式前端属于后续版本。
 
 ## 当前能力
 
@@ -16,6 +16,7 @@ BM25、BGE Dense、RRF 混合检索、稳定原文引用和基础检索评测。
 - JSON/Markdown 人工审核产物、逐段索引决定和不可变批准清单；
 - 单篇分块重试，可切换本地或显式确认的外部模型并使用一次性自定义 Prompt；
 - 已批准话题块上的中文 BM25、BGE Dense、RRF 混合检索和原文引用；
+- 使用 `BAAI/bge-reranker-v2-m3` 对 Hybrid 宽候选进行显式本地重排；
 - 本地评测集工作台、Codex 辅助候选答案与人工证据范围审核；
 - 冻结语料快照上的 P@K、Recall@K、MRR、nDCG、证据覆盖与查询延迟评测。
 
@@ -69,8 +70,10 @@ uv run xifeng index build
 uv run xifeng search "要检索的问题" --top-k 5
 uv run xifeng search "要检索的问题" --mode bm25 --top-k 5
 uv run xifeng search "要检索的问题" --mode dense --top-k 5
+uv run xifeng search "要检索的问题" --mode hybrid --rerank --top-k 5
 uv run xifeng eval curate
 uv run xifeng eval run <FROZEN_DATASET_ID> --mode hybrid --k 5
+uv run xifeng eval run <FROZEN_DATASET_ID> --mode hybrid --rerank --rerank-candidate-k 20 --k 5
 ```
 
 首次导入前，`corpus scan` 会显示解析后的绝对语料路径和发现的文章数。清洗存在
@@ -115,6 +118,12 @@ Index Build 上运行。旧的 JSON 文件评测入口暂时兼容保留。
 查询和冻结评测支持 `--mode bm25|dense|hybrid`；未指定时，包含 Dense 产物的新 Build 默认
 使用 Hybrid，旧 BM25 Build 自动使用 BM25。当前 34 块 pilot 语料的 Hybrid 默认让两路各召回 5 块，再以
 `rrf_k=60` 融合并返回请求的 Top-K。
+
+本地重排必须通过 `--rerank` 显式开启，第一版只支持 Hybrid 模式。启用后 BM25 与 Dense
+都会至少召回 `reranker.candidate_k` 个候选，RRF 去重融合后由本地 Cross-Encoder 按
+`query + 文章标题 + original_text` 精排。默认 pair 总预算为 1024 tokens，超长候选的截断
+会写入候选调试信息和冻结评测详情；模型或推理失败时命令直接失败，不静默回退到 RRF。
+可用 `--rerank-candidate-k` 在单次搜索或评测中覆盖候选深度，便于运行 5/10/20/30 对照。
 
 出题范围、Top-K 约束、AI 参考答案、答案要点、证据范围和不确定性的人工审核标准，见
 [评测问题编写与 AI 草案审核指南](docs/guides/evaluation-question-writing.md)。

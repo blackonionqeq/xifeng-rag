@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pytest
 from sqlalchemy import select
 
 from xifeng_rag.chunking import GenerationResult, approve_manifest, export_review, propose_chunks
@@ -18,6 +19,7 @@ from xifeng_rag.indexing import (
     record_build_failure,
     search,
 )
+from xifeng_rag.reranking import RerankScore
 from xifeng_rag.storage import ArticleVersionRow, Database, IndexBuildRow
 
 
@@ -168,6 +170,64 @@ def test_hybrid_build_supports_dense_and_rrf_search(database: Database, tmp_path
     assert dense[0].source == ["dense"]
     assert hybrid[0].retrieval_scores.rrf is not None
     assert hybrid[0].source == ["bm25", "dense"]
+
+
+def test_hybrid_search_can_rerank_wide_candidates(database: Database, tmp_path: Path) -> None:
+    _approve_fixture(database, tmp_path)
+    provider = FakeEmbeddingProvider()
+
+    class ReverseReranker:
+        @property
+        def metadata(self) -> dict[str, object]:
+            return {"provider": "fake"}
+
+        def rerank(self, query, candidates):
+            del query
+            return [
+                RerankScore(float(index), False)
+                for index, _candidate in enumerate(candidates, start=1)
+            ]
+
+        def close(self) -> None:
+            pass
+
+    with database.session() as session:
+        outcome = build_hybrid_index(session, tmp_path / "reranked-indexes", provider)
+        baseline = search(
+            session,
+            "水果苹果",
+            1,
+            build_id=outcome.build_id,
+            mode=RetrievalMode.HYBRID,
+            embedding_provider=provider,
+        )
+        reranked = search(
+            session,
+            "水果苹果",
+            1,
+            build_id=outcome.build_id,
+            mode=RetrievalMode.HYBRID,
+            embedding_provider=provider,
+            reranker=ReverseReranker(),
+            rerank_candidate_k=2,
+        )
+    assert reranked[0].chunk_id != baseline[0].chunk_id
+    assert reranked[0].retrieval_scores.reranker_rank == 1
+    assert reranked[0].retrieval_scores.rrf_rank == 2
+
+
+def test_reranker_rejects_single_retrieval_modes(database: Database, tmp_path: Path) -> None:
+    _approve_fixture(database, tmp_path)
+    with database.session() as session:
+        outcome = build_index(session, tmp_path / "bm25-only")
+        with pytest.raises(ValueError, match="只支持 hybrid"):
+            search(
+                session,
+                "问题",
+                build_id=outcome.build_id,
+                mode=RetrievalMode.BM25,
+                reranker=object(),  # type: ignore[arg-type]
+            )
 
 
 def test_failed_dense_build_keeps_artifacts_unpublished(database: Database, tmp_path: Path) -> None:
