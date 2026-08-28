@@ -16,7 +16,12 @@ from sqlalchemy import func, select
 
 from xifeng_rag.corpus import discover_markdown, scan_corpus
 from xifeng_rag.domain import ProposalStatus, VersionStatus
-from xifeng_rag.review_ui import ReviewApplication, ReviewHTTPServer, create_review_server
+from xifeng_rag.review_ui import (
+    IndexBuilder,
+    ReviewApplication,
+    ReviewHTTPServer,
+    create_review_server,
+)
 from xifeng_rag.storage import (
     ArticleRow,
     ArticleVersionRow,
@@ -45,6 +50,7 @@ class CorpusDashboardApplication:
         excluded_article_ids: list[str] | tuple[str, ...],
         review_dir: Path,
         index_dir: Path,
+        index_builder: IndexBuilder | None = None,
         token: str | None = None,
     ) -> None:
         self.database = database
@@ -52,6 +58,7 @@ class CorpusDashboardApplication:
         self.excluded_article_ids = tuple(excluded_article_ids)
         self.review_dir = review_dir
         self.index_dir = index_dir
+        self.index_builder = index_builder
         self.token = token or secrets.token_urlsafe(32)
         self._scan_lock = threading.Lock()
         self._child_lock = threading.Lock()
@@ -259,6 +266,7 @@ class CorpusDashboardApplication:
             proposal_id,
             self.review_dir,
             self.index_dir,
+            self.index_builder,
         )
         server, url = create_review_server(application)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -296,11 +304,12 @@ def run_corpus_dashboard(
     excluded_article_ids: list[str] | tuple[str, ...],
     review_dir: Path,
     index_dir: Path,
+    index_builder: IndexBuilder | None = None,
     *,
     open_browser: bool = True,
 ) -> None:
     application = CorpusDashboardApplication(
-        database, source_dir, excluded_article_ids, review_dir, index_dir
+        database, source_dir, excluded_article_ids, review_dir, index_dir, index_builder
     )
     server, url = create_corpus_dashboard_server(application)
     print(f"本地语料管理地址：{url}")

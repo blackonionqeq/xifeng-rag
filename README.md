@@ -2,8 +2,9 @@
 
 面向个人购买的长篇文章，构建一个本地优先、证据驱动的主题研究工具，同时作为可复现的 RAG 学习与求职展示项目。
 
-当前已实现 V0 MVP：确定性语料清洗、本地 AI 话题分块与人工审核、BM25
-检索、稳定原文引用和基础检索评测。Dense、重排、回答生成与前端属于后续版本。
+当前已实现 V0 MVP 与 V1 混合召回基线：确定性语料清洗、本地 AI 话题分块与人工审核、
+BM25、BGE Dense、RRF 混合检索、稳定原文引用和基础检索评测。重排、回答生成与正式前端
+属于后续版本。
 
 ## 当前能力
 
@@ -14,7 +15,7 @@
 - 使用本地 Ollama 和 JSON Schema 生成单层话题块提案；
 - JSON/Markdown 人工审核产物、逐段索引决定和不可变批准清单；
 - 单篇分块重试，可切换本地或显式确认的外部模型并使用一次性自定义 Prompt；
-- 已批准话题块上的中文 BM25 检索和原文引用；
+- 已批准话题块上的中文 BM25、BGE Dense、RRF 混合检索和原文引用；
 - 本地评测集工作台、Codex 辅助候选答案与人工证据范围审核；
 - 冻结语料快照上的 P@K、Recall@K、MRR、nDCG、证据覆盖与查询延迟评测。
 
@@ -66,8 +67,10 @@ uv run xifeng chunks review <ARTICLE_VERSION> --proposal <PROPOSAL_ID>
 uv run xifeng chunks approve data/reviews/<ARTICLE_VERSION>.review.json
 uv run xifeng index build
 uv run xifeng search "要检索的问题" --top-k 5
+uv run xifeng search "要检索的问题" --mode bm25 --top-k 5
+uv run xifeng search "要检索的问题" --mode dense --top-k 5
 uv run xifeng eval curate
-uv run xifeng eval run <FROZEN_DATASET_ID> --k 5
+uv run xifeng eval run <FROZEN_DATASET_ID> --mode hybrid --k 5
 ```
 
 首次导入前，`corpus scan` 会显示解析后的绝对语料路径和发现的文章数。清洗存在
@@ -106,6 +109,12 @@ Schema 约束模式运行；它仍属于外部推理，训练使用取决于该 
 首批 6–8 题应建立为 `pilot`，用于验证工作流；pilot 结果不应原地升级为正式 holdout。
 冻结会保存完整语料快照与题集内容哈希，`eval run` 只接受冻结数据集，并拒绝在不匹配的
 Index Build 上运行。旧的 JSON 文件评测入口暂时兼容保留。
+
+`index build` 默认构建原文 BM25 与 `BAAI/bge-base-zh-v1.5` Dense 索引；可用
+`--profile bm25` 显式构建旧关键词基线。模型缓存目录通过本地配置设置，推荐放在非系统盘。
+查询和冻结评测支持 `--mode bm25|dense|hybrid`；未指定时，包含 Dense 产物的新 Build 默认
+使用 Hybrid，旧 BM25 Build 自动使用 BM25。当前 34 块 pilot 语料的 Hybrid 默认让两路各召回 5 块，再以
+`rrf_k=60` 融合并返回请求的 Top-K。
 
 出题范围、Top-K 约束、AI 参考答案、答案要点、证据范围和不确定性的人工审核标准，见
 [评测问题编写与 AI 草案审核指南](docs/guides/evaluation-question-writing.md)。

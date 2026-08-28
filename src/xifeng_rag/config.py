@@ -28,6 +28,23 @@ class StorageSettings(BaseModel):
     data_dir: Path = Path("data")
 
 
+class EmbeddingSettings(BaseModel):
+    provider: str = "sentence-transformers"
+    model_id: str = "BAAI/bge-base-zh-v1.5"
+    model_revision: str | None = None
+    model_cache_dir: Path | None = None
+    device: str = "auto"
+    batch_size: int = Field(default=16, gt=0)
+    normalize_embeddings: bool = True
+    query_instruction: str = "为这个句子生成表示以用于检索相关文章："
+
+
+class RetrievalSettings(BaseModel):
+    bm25_candidate_k: int = Field(default=5, gt=0, le=1000)
+    dense_candidate_k: int = Field(default=5, gt=0, le=1000)
+    rrf_k: int = Field(default=60, gt=0)
+
+
 class OllamaSettings(BaseModel):
     executable: Path = Path("D:/ai-tools/ollama/ollama.exe")
     model_dir: Path = Path("D:/ai-models/ollama")
@@ -69,6 +86,8 @@ class Settings(BaseSettings):
     project_root: Path = Field(default_factory=Path.cwd)
     corpus: CorpusSettings = Field(default_factory=CorpusSettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
+    embedding: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
+    retrieval: RetrievalSettings = Field(default_factory=RetrievalSettings)
     ollama: OllamaSettings = Field(default_factory=OllamaSettings)
     chunking: ChunkingSettings = Field(default_factory=ChunkingSettings)
 
@@ -91,6 +110,11 @@ class Settings(BaseSettings):
     @property
     def review_dir(self) -> Path:
         return self.data_dir / "reviews"
+
+    @property
+    def embedding_cache_dir(self) -> Path | None:
+        path = self.embedding.model_cache_dir
+        return self._resolve(path) if path is not None else None
 
     def _resolve(self, path: Path) -> Path:
         value = path if path.is_absolute() else self.project_root / path

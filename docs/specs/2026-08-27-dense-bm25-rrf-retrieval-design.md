@@ -34,14 +34,15 @@ embedding_provider = sentence-transformers
 embedding_model_id = BAAI/bge-base-zh-v1.5
 embedding_model_revision
 embedding_dimension
+embedding_max_seq_length
 query_instruction
 normalization = true
 dense_distance = cosine
 bm25_text_builder = original-text-v1
 bm25_tokenizer = jieba-search-v1
 fusion_algorithm = rrf-v1
-bm25_candidate_k = 20
-dense_candidate_k = 20
+bm25_candidate_k = 5
+dense_candidate_k = 5
 rrf_k = 60
 ```
 
@@ -70,8 +71,8 @@ embedding:
   query_instruction: 为这个句子生成表示以用于检索相关文章：
 
 retrieval:
-  bm25_candidate_k: 20
-  dense_candidate_k: 20
+  bm25_candidate_k: 5
+  dense_candidate_k: 5
   rrf_k: 60
 ```
 
@@ -154,19 +155,24 @@ Qdrant 本地目录有独占文件锁。CLI 命令只在操作期间持有单个
 一次 Hybrid 查询包含两条相互独立的召回路径：
 
 ```text
-query -> jieba search mode -> BM25 Top-20 -----+
+query -> jieba search mode -> BM25 Top-5 ------+
                                                 +-> RRF -> final Top-K
-query -> BGE query vector -> Dense Top-20 ------+
+query -> BGE query vector -> Dense Top-5 -------+
 ```
 
 默认参数为：
 
 ```text
-bm25_candidate_k = 20
-dense_candidate_k = 20
+bm25_candidate_k = 5
+dense_candidate_k = 5
 rrf_k = 60
 final_top_k = 5
 ```
+
+候选深度最初取 20；在 34 块 pilot 语料的 6 道 dev 题上，20/20 会让两路都位于中游的
+噪声块凭两份 RRF 分数压过单路首位的正确块。对称候选深度 5/5 的结果优于 10/10 和
+20/20，因此改为当前 V1 默认值。该选择只是小样本 dev 调参结论；扩充语料并建立 holdout
+后必须重新验证，不能把它视为通用最优值。
 
 RRF 不混合不可比的 BM25 与 cosine 原始分数。对每个检索器返回的 1-based rank，按
 `1 / (rrf_k + rank)` 计分，同一 `chunk_id` 的两路贡献相加。最终按以下稳定规则排序：
@@ -210,8 +216,10 @@ pilot 只用于验证实现和形成假设。后续参数调整只能使用正�
 
 ## 可观测性与隐私
 
-Build 元数据和评测运行记录：模型 ID/revision、维度、查询 instruction 版本、归一化设置、
-解析设备、构建耗时、查询模式、两路候选深度、RRF 参数、代码版本和资源统计。
+Build 元数据和评测运行记录：模型 ID/revision、维度、实际最大输入长度、查询 instruction
+版本、归一化设置、解析设备、构建耗时、查询模式、两路候选深度、RRF 参数、代码版本和
+资源统计。话题块超过模型输入上限时允许模型按自身规则截断，但该限制必须在实验分析中明确
+说明；后续以 contextual text 或其他长上下文模型作为独立实验，不能在本基线中暗改切块。
 
 普通日志不得包含：
 

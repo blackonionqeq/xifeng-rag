@@ -9,7 +9,7 @@
 3. 定义窄 `EmbeddingProvider`，实现 Sentence Transformers BGE provider 和确定性测试 fake。
 4. 将现有 BM25 Build 泛化为可配置 Profile；在同一临时 Build 中生成 BM25 与本地 Qdrant。
 5. 校验向量维度、point 集合和 TopicChunk 集合，关闭本地 Qdrant 后原子发布并切换活动 Build。
-6. 实现 BM25、Dense、Hybrid 三种检索模式，以及 candidate depth 20、RRF k=60 的稳定融合。
+6. 实现 BM25、Dense、Hybrid 三种检索模式，以及经 pilot dev 集验证的 candidate depth 5、RRF k=60 稳定融合。
 7. 扩展 CLI build/search/eval 参数和评测运行元数据，允许同一冻结快照做三种模式对照。
 8. 使用 fake provider 完成单元与集成测试，并验证失败回滚、Profile 隔离、离线默认测试和日志隐私。
 9. 更新 README 与职责匹配的设计文档，运行 pytest、Ruff、Pyright 和 CLI smoke test。

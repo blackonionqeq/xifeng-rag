@@ -5,6 +5,7 @@ import os
 import secrets
 import threading
 import webbrowser
+from collections.abc import Callable
 from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -14,6 +15,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 
 from pydantic import ValidationError
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from xifeng_rag.chunking import approve_manifest
 from xifeng_rag.domain import (
@@ -22,7 +24,12 @@ from xifeng_rag.domain import (
     VersionStatus,
     validate_topic_coverage,
 )
-from xifeng_rag.indexing import IndexBuildError, build_index, record_build_failure
+from xifeng_rag.indexing import (
+    BuildOutcome,
+    IndexBuildError,
+    build_index,
+    record_build_failure,
+)
 from xifeng_rag.storage import (
     ApprovedManifestRow,
     ArticleRow,
@@ -34,6 +41,7 @@ from xifeng_rag.storage import (
 
 MAX_REQUEST_BYTES = 256 * 1024
 STATIC_DIR = Path(__file__).with_name("review_static")
+IndexBuilder = Callable[[Session, Path], BuildOutcome]
 
 
 @dataclass(frozen=True)
@@ -185,12 +193,14 @@ class ReviewApplication:
         proposal_id: str,
         output_dir: Path,
         index_dir: Path,
+        index_builder: IndexBuilder | None = None,
         token: str | None = None,
     ) -> None:
         self.database = database
         self.document = load_review_document(database, version_id, proposal_id)
         self.output_dir = output_dir
         self.index_dir = index_dir
+        self.index_builder = index_builder
         self.token = token or secrets.token_urlsafe(32)
         self.draft_path: Path | None = None
         self._approval_lock = threading.Lock()
@@ -225,7 +235,8 @@ class ReviewApplication:
                 )
             try:
                 with self.database.session() as session:
-                    outcome = build_index(session, self.index_dir)
+                    builder = self.index_builder or build_index
+                    outcome = builder(session, self.index_dir)
             except IndexBuildError as exc:
                 with self.database.session() as session:
                     record_build_failure(session, exc)
@@ -273,11 +284,12 @@ def run_review_server(
     proposal_id: str,
     output_dir: Path,
     index_dir: Path,
+    index_builder: IndexBuilder | None = None,
     *,
     open_browser: bool = True,
 ) -> None:
     application = ReviewApplication(
-        database, version_id, proposal_id, output_dir, index_dir
+        database, version_id, proposal_id, output_dir, index_dir, index_builder
     )
     server, url = create_review_server(application)
     print(f"本地审核地址：{url}")

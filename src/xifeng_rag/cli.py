@@ -25,16 +25,24 @@ from xifeng_rag.chunking import (
 from xifeng_rag.config import Settings, load_settings
 from xifeng_rag.corpus import discover_markdown, scan_corpus
 from xifeng_rag.corpus_ui import run_corpus_dashboard
-from xifeng_rag.domain import ProposalStatus, VersionStatus
+from xifeng_rag.domain import BuildStatus, ProposalStatus, RetrievalMode, VersionStatus
 from xifeng_rag.evaluation import run_evaluation, run_frozen_evaluation
 from xifeng_rag.evaluation_ui import run_evaluation_server
-from xifeng_rag.indexing import IndexBuildError, build_index, record_build_failure, search
-from xifeng_rag.review_ui import run_review_server
+from xifeng_rag.indexing import (
+    IndexBuildError,
+    SentenceTransformersEmbeddingProvider,
+    build_hybrid_index,
+    build_index,
+    record_build_failure,
+    search,
+)
+from xifeng_rag.review_ui import IndexBuilder, run_review_server
 from xifeng_rag.storage import (
     ArticleRow,
     ArticleVersionRow,
     ChunkProposalRow,
     Database,
+    IndexBuildRow,
     ParagraphRow,
 )
 
@@ -53,6 +61,61 @@ app.add_typer(eval_app, name="eval")
 class Runtime:
     settings: Settings
     database: Database
+
+
+def _embedding_provider(settings: Settings) -> SentenceTransformersEmbeddingProvider:
+    if settings.embedding.provider != "sentence-transformers":
+        raise ValueError(f"不支持的 Embedding provider：{settings.embedding.provider}")
+    return SentenceTransformersEmbeddingProvider(
+        settings.embedding.model_id,
+        revision=settings.embedding.model_revision,
+        cache_dir=settings.embedding_cache_dir,
+        device=settings.embedding.device,
+        batch_size=settings.embedding.batch_size,
+        normalize_embeddings=settings.embedding.normalize_embeddings,
+        query_instruction=settings.embedding.query_instruction,
+    )
+
+
+def _hybrid_index_builder(settings: Settings) -> IndexBuilder:
+    def builder(session: Session, index_dir: Path):
+        provider = _embedding_provider(settings)
+        try:
+            return build_hybrid_index(
+                session,
+                index_dir,
+                provider,
+                bm25_candidate_k=settings.retrieval.bm25_candidate_k,
+                dense_candidate_k=settings.retrieval.dense_candidate_k,
+                rrf_k=settings.retrieval.rrf_k,
+            )
+        finally:
+            provider.close()
+
+    return builder
+
+
+def _resolved_retrieval_mode(
+    runtime: Runtime, requested: RetrievalMode | None, build_id: str | None
+) -> RetrievalMode:
+    if requested is not None:
+        return requested
+    with runtime.database.session() as session:
+        build = (
+            session.get(IndexBuildRow, build_id)
+            if build_id is not None
+            else session.scalar(
+                select(IndexBuildRow).where(
+                    IndexBuildRow.active.is_(True),
+                    IndexBuildRow.status == BuildStatus.ACTIVE.value,
+                )
+            )
+        )
+    return (
+        RetrievalMode.HYBRID
+        if build is not None and (Path(build.path) / "qdrant").is_dir()
+        else RetrievalMode.BM25
+    )
 
 
 def _version(value: bool) -> None:
@@ -183,6 +246,7 @@ def corpus_manage(
             runtime.settings.corpus.excluded_article_ids,
             runtime.settings.review_dir,
             runtime.settings.index_dir,
+            _hybrid_index_builder(runtime.settings),
             open_browser=not no_open,
         )
     except Exception as exc:
@@ -455,6 +519,7 @@ def chunks_review(
             proposal,
             runtime.settings.review_dir,
             runtime.settings.index_dir,
+            _hybrid_index_builder(runtime.settings),
             open_browser=not no_open,
         )
     except Exception as exc:
@@ -474,12 +539,33 @@ def chunks_approve(ctx: typer.Context, manifest: Path) -> None:
 
 
 @index_app.command("build")
-def index_build(ctx: typer.Context) -> None:
-    """在临时目录构建 BM25，并在自检后发布。"""
+def index_build(
+    ctx: typer.Context,
+    profile: Annotated[
+        str, typer.Option("--profile", help="构建 hybrid 或兼容的 bm25 Profile")
+    ] = "hybrid",
+) -> None:
+    """在临时目录构建索引，并在自检后发布。"""
     runtime = _runtime(ctx)
+    provider = None
     try:
+        if profile not in {"bm25", "hybrid"}:
+            raise ValueError("--profile 只支持 bm25 或 hybrid")
+        if profile == "hybrid":
+            provider = _embedding_provider(runtime.settings)
         with runtime.database.session() as session:
-            outcome = build_index(session, runtime.settings.index_dir)
+            outcome = (
+                build_hybrid_index(
+                    session,
+                    runtime.settings.index_dir,
+                    provider,
+                    bm25_candidate_k=runtime.settings.retrieval.bm25_candidate_k,
+                    dense_candidate_k=runtime.settings.retrieval.dense_candidate_k,
+                    rrf_k=runtime.settings.retrieval.rrf_k,
+                )
+                if provider is not None
+                else build_index(session, runtime.settings.index_dir)
+            )
         typer.echo(
             f"活动索引：{outcome.build_id}，{outcome.chunk_count} 块，"
             f"{outcome.duration_ms} ms，{outcome.path}"
@@ -490,6 +576,9 @@ def index_build(ctx: typer.Context) -> None:
         _abort(exc)
     except Exception as exc:
         _abort(exc)
+    finally:
+        if provider is not None:
+            provider.close()
 
 
 @app.command("search")
@@ -497,13 +586,29 @@ def search_command(
     ctx: typer.Context,
     query: str,
     top_k: Annotated[int, typer.Option("--top-k", min=1, max=100)] = 5,
+    mode: Annotated[RetrievalMode | None, typer.Option("--mode")] = None,
+    build: Annotated[str | None, typer.Option("--build")] = None,
     as_json: Annotated[bool, typer.Option("--json", help="输出完整结构化候选")] = False,
 ) -> None:
     """搜索已批准话题块并展示原文引用。"""
     runtime = _runtime(ctx)
+    provider = None
     try:
+        selected_mode = _resolved_retrieval_mode(runtime, mode, build)
+        if selected_mode in {RetrievalMode.DENSE, RetrievalMode.HYBRID}:
+            provider = _embedding_provider(runtime.settings)
         with runtime.database.session() as session:
-            candidates = search(session, query, top_k)
+            candidates = search(
+                session,
+                query,
+                top_k,
+                build_id=build,
+                mode=selected_mode,
+                embedding_provider=provider,
+                bm25_candidate_k=runtime.settings.retrieval.bm25_candidate_k,
+                dense_candidate_k=runtime.settings.retrieval.dense_candidate_k,
+                rrf_k=runtime.settings.retrieval.rrf_k,
+            )
         if as_json:
             typer.echo(
                 json.dumps([item.model_dump() for item in candidates], ensure_ascii=False, indent=2)
@@ -511,13 +616,21 @@ def search_command(
             return
         for rank, item in enumerate(candidates, start=1):
             snippet = item.original_text[:240].replace("\n", " ")
+            score = item.retrieval_scores.rrf
+            if score is None:
+                score = item.retrieval_scores.dense
+            if score is None:
+                score = item.retrieval_scores.bm25
             typer.echo(
-                f"{rank}. [{item.retrieval_scores.bm25:.4f}] {item.article_title} "
+                f"{rank}. [{float(score or 0.0):.4f}] {item.article_title} "
                 f"{item.article_version} ¶{item.paragraph_range[0]}–{item.paragraph_range[1]}"
             )
             typer.echo(f"   原文：{snippet}")
     except Exception as exc:
         _abort(exc)
+    finally:
+        if provider is not None:
+            provider.close()
 
 
 @eval_app.command("run")
@@ -528,20 +641,42 @@ def eval_run(
     build: Annotated[
         str | None, typer.Option("--build", help="指定兼容冻结快照的 Index Build")
     ] = None,
+    mode: Annotated[RetrievalMode | None, typer.Option("--mode")] = None,
 ) -> None:
     """运行冻结检索评测集。"""
     runtime = _runtime(ctx)
+    provider = None
     try:
+        legacy_path = Path(evalset)
+        selected_mode = (
+            RetrievalMode.BM25
+            if legacy_path.is_file()
+            else _resolved_retrieval_mode(runtime, mode, build)
+        )
+        if selected_mode in {RetrievalMode.DENSE, RetrievalMode.HYBRID}:
+            provider = _embedding_provider(runtime.settings)
         with runtime.database.session() as session:
-            legacy_path = Path(evalset)
             outcome = (
                 run_evaluation(session, legacy_path.resolve(), k)
                 if legacy_path.is_file()
-                else run_frozen_evaluation(session, evalset, k, build_id=build)
+                else run_frozen_evaluation(
+                    session,
+                    evalset,
+                    k,
+                    build_id=build,
+                    mode=selected_mode,
+                    embedding_provider=provider,
+                    bm25_candidate_k=runtime.settings.retrieval.bm25_candidate_k,
+                    dense_candidate_k=runtime.settings.retrieval.dense_candidate_k,
+                    rrf_k=runtime.settings.retrieval.rrf_k,
+                )
             )
         typer.echo(json.dumps(outcome, ensure_ascii=False, indent=2))
     except Exception as exc:
         _abort(exc)
+    finally:
+        if provider is not None:
+            provider.close()
 
 
 @eval_app.command("curate")

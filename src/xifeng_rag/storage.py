@@ -141,6 +141,10 @@ class EvaluationRunRow(Base):
     k: Mapped[int | None] = mapped_column(Integer, nullable=True)
     code_commit: Mapped[str | None] = mapped_column(String(64), nullable=True)
     worktree_dirty: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    retrieval_mode: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    bm25_candidate_k: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    dense_candidate_k: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rrf_k: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

@@ -12,7 +12,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from xifeng_rag.corpus import stable_id
-from xifeng_rag.indexing import search
+from xifeng_rag.domain import RetrievalMode
+from xifeng_rag.indexing import EmbeddingProvider, search
 from xifeng_rag.storage import (
     EvaluationDatasetRow,
     EvaluationEvidenceRow,
@@ -114,7 +115,16 @@ def _git_state() -> tuple[str | None, bool | None]:
 
 
 def run_frozen_evaluation(
-    session: Session, dataset_id: str, k: int = 5, build_id: str | None = None
+    session: Session,
+    dataset_id: str,
+    k: int = 5,
+    build_id: str | None = None,
+    *,
+    mode: RetrievalMode | str = RetrievalMode.BM25,
+    embedding_provider: EmbeddingProvider | None = None,
+    bm25_candidate_k: int = 5,
+    dense_candidate_k: int = 5,
+    rrf_k: int = 60,
 ) -> dict[str, object]:
     if k <= 0:
         raise ValueError("k 必须大于 0")
@@ -171,7 +181,17 @@ def run_frozen_evaluation(
             )
         }
         started = time.perf_counter()
-        candidates = search(session, question.query, top_k=k, build_id=build.id)
+        candidates = search(
+            session,
+            question.query,
+            top_k=k,
+            build_id=build.id,
+            mode=mode,
+            embedding_provider=embedding_provider,
+            bm25_candidate_k=bm25_candidate_k,
+            dense_candidate_k=dense_candidate_k,
+            rrf_k=rrf_k,
+        )
         latency_ms = (time.perf_counter() - started) * 1000
         ranked = [item.chunk_id for item in candidates]
         retrieved_ranges = [
@@ -183,6 +203,14 @@ def run_frozen_evaluation(
                 "question_id": question.id,
                 "split": question.split,
                 "ranked_chunk_ids": ranked,
+                "retrieval_candidates": [
+                    {
+                        "chunk_id": item.chunk_id,
+                        "source": item.source,
+                        "scores": item.retrieval_scores.model_dump(),
+                    }
+                    for item in candidates
+                ],
                 "mapped_relevant_chunk_ids": sorted(relevant),
                 "precision_at_k": precision_at_k(ranked, relevant, k),
                 "recall_at_k": recall_at_k(ranked, relevant, k),
@@ -193,6 +221,7 @@ def run_frozen_evaluation(
                 ),
                 "latency_ms": latency_ms,
                 "should_abstain": not question.answerable,
+                "retrieval_mode": str(RetrievalMode(mode)),
             }
         )
     metric_names = [
@@ -226,9 +255,18 @@ def run_frozen_evaluation(
             k=k,
             code_commit=code_commit,
             worktree_dirty=worktree_dirty,
+            retrieval_mode=str(RetrievalMode(mode)),
+            bm25_candidate_k=bm25_candidate_k,
+            dense_candidate_k=dense_candidate_k,
+            rrf_k=rrf_k,
         )
     )
-    return {"run_id": run_id, "dataset_id": dataset.id, "metrics": metrics}
+    return {
+        "run_id": run_id,
+        "dataset_id": dataset.id,
+        "retrieval_mode": str(RetrievalMode(mode)),
+        "metrics": metrics,
+    }
 
 
 def run_evaluation(session: Session, dataset_path: Path, k: int = 5) -> dict[str, object]:

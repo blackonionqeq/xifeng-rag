@@ -10,6 +10,7 @@ import pytest
 from sqlalchemy import func, select
 
 from xifeng_rag.domain import ProposalStatus, VersionStatus
+from xifeng_rag.indexing import build_index
 from xifeng_rag.review_ui import (
     ApprovalIndexError,
     ReviewApplication,
@@ -262,6 +263,30 @@ def test_approval_requires_confirmation_and_saved_draft(
         application.approve_and_build({"confirmed": True})
     with database.session() as session:
         assert session.scalar(select(func.count()).select_from(ApprovedManifestRow)) == 0
+
+
+def test_approval_uses_injected_index_builder(database: Database, tmp_path: Path) -> None:
+    version_id, proposal_id = _review_fixture(database)
+    calls: list[Path] = []
+
+    def custom_builder(session, index_dir):
+        calls.append(index_dir)
+        return build_index(session, index_dir)
+
+    application = ReviewApplication(
+        database,
+        version_id,
+        proposal_id,
+        tmp_path / "reviews",
+        tmp_path / "indexes",
+        index_builder=custom_builder,
+    )
+    application.save({"topics": application.document.topics})
+
+    result = application.approve_and_build({"confirmed": True})
+
+    assert calls == [tmp_path / "indexes"]
+    assert result["index_id"]
 
 
 def test_review_rejects_pending_proposal_for_already_indexed_version(

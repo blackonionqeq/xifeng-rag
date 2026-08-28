@@ -106,3 +106,17 @@ def test_missing_project_dotenv_is_allowed(tmp_path: Path, monkeypatch) -> None:
     settings = load_settings(config)
     assert settings.project_root == tmp_path
     assert "DEEPSEEK_API_KEY" not in os.environ
+
+
+def test_embedding_cache_path_and_retrieval_defaults(tmp_path: Path) -> None:
+    config = tmp_path / "settings.yaml"
+    config.write_text(
+        "project_root: .\nembedding:\n  model_cache_dir: models/huggingface\n",
+        encoding="utf-8",
+    )
+    settings = load_settings(config)
+    assert settings.embedding_cache_dir == (tmp_path / "models/huggingface").resolve()
+    assert settings.embedding.model_id == "BAAI/bge-base-zh-v1.5"
+    assert settings.retrieval.bm25_candidate_k == 5
+    assert settings.retrieval.dense_candidate_k == 5
+    assert settings.retrieval.rrf_k == 60

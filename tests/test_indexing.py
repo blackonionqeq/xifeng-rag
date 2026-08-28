@@ -3,11 +3,21 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
 from sqlalchemy import select
 
 from xifeng_rag.chunking import GenerationResult, approve_manifest, export_review, propose_chunks
 from xifeng_rag.corpus import scan_corpus
-from xifeng_rag.indexing import IndexBuildError, build_index, record_build_failure, search
+from xifeng_rag.domain import RetrievalMode
+from xifeng_rag.indexing import (
+    IndexBuildError,
+    RankedHit,
+    build_hybrid_index,
+    build_index,
+    reciprocal_rank_fusion,
+    record_build_failure,
+    search,
+)
 from xifeng_rag.storage import ArticleVersionRow, Database, IndexBuildRow
 
 
@@ -36,6 +46,37 @@ class TwoTopicGenerator:
                 ensure_ascii=False,
             )
         )
+
+
+class FakeEmbeddingProvider:
+    dimension = 2
+
+    @property
+    def metadata(self) -> dict[str, object]:
+        return {
+            "provider": "fake",
+            "model_id": "fake-v1",
+            "model_revision": "test",
+            "dimension": 2,
+            "max_seq_length": 512,
+            "normalize_embeddings": True,
+            "query_instruction": "test",
+        }
+
+    def encode_documents(self, texts: list[str]) -> np.ndarray:
+        return np.asarray(
+            [[1.0, 0.0] if "苹果" in text else [0.0, 1.0] for text in texts],
+            dtype=np.float32,
+        )
+
+    def encode_queries(self, texts: list[str]) -> np.ndarray:
+        return np.asarray(
+            [[1.0, 0.0] if "水果" in text else [0.0, 1.0] for text in texts],
+            dtype=np.float32,
+        )
+
+    def close(self) -> None:
+        pass
 
 
 def _approve_fixture(database: Database, tmp_path: Path) -> None:
@@ -73,6 +114,80 @@ def test_build_publish_and_search_returns_original_citation(
         assert candidates[0].paragraph_range == (3, 4)
         active = session.scalar(select(IndexBuildRow).where(IndexBuildRow.active.is_(True)))
         assert active is not None
+
+
+def test_rrf_combines_ranks_and_has_stable_order() -> None:
+    fused = reciprocal_rank_fusion(
+        [RankedHit("a", 8.0, 1), RankedHit("b", 7.0, 2)],
+        [RankedHit("b", 0.9, 1), RankedHit("c", 0.8, 2)],
+        rrf_k=60,
+    )
+    assert [item.chunk_id for item in fused] == ["b", "a", "c"]
+    assert fused[0].bm25 is not None and fused[0].dense is not None
+
+
+def test_hybrid_build_supports_dense_and_rrf_search(database: Database, tmp_path: Path) -> None:
+    _approve_fixture(database, tmp_path)
+    provider = FakeEmbeddingProvider()
+    with database.session() as session:
+        outcome = build_hybrid_index(session, tmp_path / "hybrid-indexes", provider)
+        assert (outcome.path / "qdrant").is_dir()
+        metadata = json.loads((outcome.path / "metadata.json").read_text(encoding="utf-8"))
+        assert metadata["embedding"]["model_id"] == "fake-v1"
+        assert metadata["retrieval"] == {
+            "bm25_candidate_k": 5,
+            "dense_candidate_k": 5,
+            "rrf_k": 60,
+        }
+        variant = build_hybrid_index(
+            session,
+            tmp_path / "hybrid-indexes",
+            provider,
+            bm25_candidate_k=6,
+        )
+        assert variant.build_id != outcome.build_id
+    with database.session() as session:
+        dense = search(
+            session,
+            "水果怎么种",
+            2,
+            build_id=outcome.build_id,
+            mode=RetrievalMode.DENSE,
+            embedding_provider=provider,
+        )
+        hybrid = search(
+            session,
+            "水果苹果",
+            2,
+            build_id=outcome.build_id,
+            mode=RetrievalMode.HYBRID,
+            embedding_provider=provider,
+        )
+    assert dense[0].topic_title == "苹果"
+    assert dense[0].retrieval_scores.dense_rank == 1
+    assert dense[0].source == ["dense"]
+    assert hybrid[0].retrieval_scores.rrf is not None
+    assert hybrid[0].source == ["bm25", "dense"]
+
+
+def test_failed_dense_build_keeps_artifacts_unpublished(database: Database, tmp_path: Path) -> None:
+    _approve_fixture(database, tmp_path)
+
+    class FailingProvider(FakeEmbeddingProvider):
+        def encode_documents(self, texts: list[str]) -> np.ndarray:
+            del texts
+            raise RuntimeError("synthetic dense failure")
+
+    try:
+        with database.session() as session:
+            build_hybrid_index(session, tmp_path / "failed-hybrid", FailingProvider())
+    except IndexBuildError as exc:
+        assert exc.profile_id != "approved-topic-original-bm25-jieba-v1"
+        assert not exc.final_path.exists()
+        with database.session() as session:
+            record_build_failure(session, exc)
+    else:
+        raise AssertionError("synthetic dense build must fail")
 
 
 def test_build_rejects_empty_index(database: Database, tmp_path: Path) -> None:

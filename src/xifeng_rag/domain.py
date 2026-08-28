@@ -34,6 +34,12 @@ class BuildStatus(StrEnum):
     SUPERSEDED = "superseded"
 
 
+class RetrievalMode(StrEnum):
+    BM25 = "bm25"
+    DENSE = "dense"
+    HYBRID = "hybrid"
+
+
 class ParagraphData(BaseModel):
     number: int = Field(ge=1)
     text: str = Field(min_length=1)
@@ -98,7 +104,11 @@ class GeneratedTopicProposal(BaseModel):
 
 
 class RetrievalScores(BaseModel):
-    bm25: float
+    bm25: float | None = None
+    bm25_rank: int | None = Field(default=None, ge=1)
+    dense: float | None = None
+    dense_rank: int | None = Field(default=None, ge=1)
+    rrf: float | None = None
 
 
 class RetrievalCandidate(BaseModel):

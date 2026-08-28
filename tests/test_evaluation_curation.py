@@ -270,7 +270,16 @@ def test_fresh_database_has_evaluation_curation_schema(database: Database) -> No
         "evaluation_ai_proposals",
     } <= table_names
     run_columns = {item["name"] for item in inspect(database.engine).get_columns("evaluation_runs")}
-    assert {"dataset_content_hash", "corpus_snapshot", "profile_id", "k"} <= run_columns
+    assert {
+        "dataset_content_hash",
+        "corpus_snapshot",
+        "profile_id",
+        "k",
+        "retrieval_mode",
+        "bm25_candidate_k",
+        "dense_candidate_k",
+        "rrf_k",
+    } <= run_columns
 
 
 def test_question_document_does_not_duplicate_canonical_article(
@@ -294,8 +303,8 @@ def test_frozen_evaluation_maps_ranges_and_checks_snapshot(
         save_reviewed_answer(session, question_id, _review_value())
         freeze_dataset(session, dataset_id)
 
-    def fake_search(session, query: str, top_k: int, build_id: str | None = None):
-        del session, query, top_k, build_id
+    def fake_search(session, query: str, top_k: int, build_id: str | None = None, **kwargs):
+        del session, query, top_k, build_id, kwargs
         return [
             RetrievalCandidate(
                 chunk_id="chunk_eval_1",

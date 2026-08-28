@@ -47,6 +47,11 @@ Qdrant 第一阶段使用进程内本地持久化模式，不要求启动独立�
 
 BM25 与 Dense 检索保持逻辑独立，通过自有 RRF 实现融合，便于保存各路原始排名和完成消融实验。
 
+V1 基线使用 `sentence-transformers` 加载 `BAAI/bge-base-zh-v1.5`，文档与查询向量归一化后
+写入每个 Index Build 独立的 Qdrant local storage。查询支持 BM25、Dense 与 Hybrid 三种
+显式模式；当前 34 块 pilot 语料的 Hybrid 默认使用两路 Top-5 和 `rrf_k=60`，不直接混合
+两路原始分数。候选深度来自 dev 集参数实验，语料和评测集扩充后必须重新验证。
+
 V0 已采用 `jieba.Tokenizer` 的独立实例完成本地 search-mode 分词，封装版本为
 `jieba-search-v1`。该选择是可替换的基线，后续分词器对照必须创建新的 Index Profile，
 不得覆盖已有实验索引。
