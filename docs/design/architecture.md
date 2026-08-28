@@ -94,7 +94,20 @@ source
 
 其中 `source` 标识 dense、bm25、graph 等候选来源。未来 GraphRAG 只需产生相同结构的候选，再进入现有融合、重排和生成流程。
 
-## 6. 数据分层
+## 6. 确定性上下文组装
+
+Reranker 之后由普通 Python `ContextAssembler` 将排序候选转换为结构化证据上下文。它保持
+完整 TopicChunk 和输入顺序，只执行完全重复去重、数量/字符预算、查询内引用编号、来源追踪、
+排除原因和规范 JSON 渲染。默认最多 5 块、总渲染上限 50,000 字符；不做语义判断、块内
+截断、文章配额、重新检索或网络调用。
+
+AI 话题标题和概括保留为检索辅助元信息，默认不进入 Generator 上下文；即使显式开启，也
+必须带 AI 生成标签且不能作为作者原话引用。完整渲染上下文只存在于内存，不在普通日志或
+数据库复制正文。未来 RetrievalController 或抽取式 Compressor 插在 Reranker 与组装器之间，
+组装器本身继续保持确定性。详细协议见
+[`docs/specs/2026-08-28-deterministic-context-assembly-design.md`](../specs/2026-08-28-deterministic-context-assembly-design.md)。
+
+## 7. 数据分层
 
 ```text
 Article
@@ -124,7 +137,7 @@ Article
 本地语料管理页明确区分最新来源版本与当前索引版本。新正文完成审核和索引前，旧版本继续
 服务是增量更新的正常状态，不应被简化为单个含义不清的“当前版本”。
 
-## 7. Index Profile
+## 8. Index Profile
 
 索引构建方案由一个小型配置描述：
 
@@ -137,7 +150,7 @@ embedding_model: Qwen/Qwen3-Embedding-0.6B
 
 不同 profile 使用独立索引，防止向量空间、切块方式或实验数据相互污染。Reranker 与 Generator 属于查询期配置，不要求重建索引。
 
-## 8. 可观测性与可复现性
+## 9. 可观测性与可复现性
 
 每次评测至少记录：
 

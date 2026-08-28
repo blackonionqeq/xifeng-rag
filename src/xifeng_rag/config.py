@@ -56,6 +56,12 @@ class RerankerSettings(BaseModel):
     candidate_k: int = Field(default=5, gt=0, le=1000)
 
 
+class ContextAssemblySettings(BaseModel):
+    max_evidence_items: int = Field(default=5, gt=0, le=1000)
+    max_total_chars: int = Field(default=50_000, ge=15)
+    include_ai_metadata: bool = False
+
+
 class OllamaSettings(BaseModel):
     executable: Path = Path("D:/ai-tools/ollama/ollama.exe")
     model_dir: Path = Path("D:/ai-models/ollama")
@@ -100,6 +106,7 @@ class Settings(BaseSettings):
     embedding: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
     retrieval: RetrievalSettings = Field(default_factory=RetrievalSettings)
     reranker: RerankerSettings = Field(default_factory=RerankerSettings)
+    context_assembly: ContextAssemblySettings = Field(default_factory=ContextAssemblySettings)
     ollama: OllamaSettings = Field(default_factory=OllamaSettings)
     chunking: ChunkingSettings = Field(default_factory=ChunkingSettings)
 

@@ -3,8 +3,8 @@
 面向个人购买的长篇文章，构建一个本地优先、证据驱动的主题研究工具，同时作为可复现的 RAG 学习与求职展示项目。
 
 当前已实现 V0 MVP 与 V1 本地检索主链：确定性语料清洗、本地 AI 话题分块与人工审核、
-BM25、BGE Dense、RRF 混合检索、可显式启用的本地 Cross-Encoder 重排、稳定原文引用和
-基础检索评测。回答生成与正式前端属于后续版本。
+BM25、BGE Dense、RRF 混合检索、可显式启用的本地 Cross-Encoder 重排、确定性上下文组装、
+稳定原文引用和基础检索评测。回答生成与正式前端属于后续版本。
 
 ## 当前能力
 
@@ -17,6 +17,7 @@ BM25、BGE Dense、RRF 混合检索、可显式启用的本地 Cross-Encoder 重
 - 单篇分块重试，可切换本地或显式确认的外部模型并使用一次性自定义 Prompt；
 - 已批准话题块上的中文 BM25、BGE Dense、RRF 混合检索和原文引用；
 - 使用 `BAAI/bge-reranker-v2-m3` 对 Hybrid 宽候选进行显式本地重排；
+- 将排序候选按数量与字符预算组装为带稳定来源的本地证据上下文；
 - 本地评测集工作台、Codex 辅助候选答案与人工证据范围审核；
 - 冻结语料快照上的 P@K、Recall@K、MRR、nDCG、证据覆盖与查询延迟评测。
 
@@ -71,6 +72,7 @@ uv run xifeng search "要检索的问题" --top-k 5
 uv run xifeng search "要检索的问题" --mode bm25 --top-k 5
 uv run xifeng search "要检索的问题" --mode dense --top-k 5
 uv run xifeng search "要检索的问题" --mode hybrid --rerank --top-k 5
+uv run xifeng search "要检索的问题" --mode hybrid --rerank --assemble
 uv run xifeng eval curate
 uv run xifeng eval run <FROZEN_DATASET_ID> --mode hybrid --k 5
 uv run xifeng eval run <FROZEN_DATASET_ID> --mode hybrid --rerank --rerank-candidate-k 20 --k 5
@@ -127,6 +129,12 @@ Index Build 上运行。旧的 JSON 文件评测入口暂时兼容保留。
 可用 `--rerank-candidate-k` 在单次搜索或评测中覆盖候选深度，便于在正式 dev benchmark
 扩充后重新运行 5/10/20/30 对照。
 
+`search --assemble` 在本地把排序候选转换为带 `E1`、`E2` 等查询内引用 ID 的规范 JSON
+证据上下文，不调用 Generator，也不产生外部请求。默认最多选择 5 个完整 TopicChunk、总渲染
+上限 50,000 字符；放不下的后续块会记录排除原因，排名第一的块若单独超限则明确失败，不静默
+截断或改写原文。AI 话题标题与概括保留在内部结构中，但默认不进入 Generator 上下文；可通过
+`context_assembly.include_ai_metadata` 开启用于后续单变量对照，它们始终不能作为作者原话引用。
+
 出题范围、Top-K 约束、AI 参考答案、答案要点、证据范围和不确定性的人工审核标准，见
 [评测问题编写与 AI 草案审核指南](docs/guides/evaluation-question-writing.md)。
 
@@ -141,6 +149,7 @@ Index Build 上运行。旧的 JSON 文件评测入口暂时兼容保留。
 - [Codex CLI 单篇分块 Provider 设计](docs/specs/2026-08-26-codex-cli-chunk-provider-design.md)
 - [本地语料管理页设计](docs/specs/2026-08-26-corpus-management-dashboard-design.md)
 - [评测集策展与 Codex 辅助设计](docs/specs/2026-08-27-evaluation-dataset-curation-design.md)
+- [确定性上下文组装设计](docs/specs/2026-08-28-deterministic-context-assembly-design.md)
 - [评测问题编写与 AI 草案审核指南](docs/guides/evaluation-question-writing.md)
 - [Agent 工作约束](AGENTS.md)
 

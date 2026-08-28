@@ -123,6 +123,32 @@ def test_embedding_cache_path_and_retrieval_defaults(tmp_path: Path) -> None:
     assert settings.reranker.model_id == "BAAI/bge-reranker-v2-m3"
     assert settings.reranker.max_pair_tokens == 1024
     assert settings.reranker.candidate_k == 5
+    assert settings.context_assembly.max_evidence_items == 5
+    assert settings.context_assembly.max_total_chars == 50_000
+    assert not settings.context_assembly.include_ai_metadata
+
+
+def test_context_assembly_yaml_and_environment_settings(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config = tmp_path / "settings.yaml"
+    config.write_text(
+        "context_assembly:\n"
+        "  max_evidence_items: 3\n"
+        "  max_total_chars: 40000\n"
+        "  include_ai_metadata: false\n",
+        encoding="utf-8",
+    )
+    settings = load_settings(config)
+    assert settings.context_assembly.max_evidence_items == 3
+    assert settings.context_assembly.max_total_chars == 40_000
+    assert not settings.context_assembly.include_ai_metadata
+
+    monkeypatch.setenv("XIFENG_CONTEXT_ASSEMBLY__INCLUDE_AI_METADATA", "true")
+    environment_config = tmp_path / "environment.yaml"
+    environment_config.write_text("{}\n", encoding="utf-8")
+    environment_settings = load_settings(environment_config)
+    assert environment_settings.context_assembly.include_ai_metadata
 
 
 def test_reranker_cache_path_resolves_from_project_root(tmp_path: Path) -> None:

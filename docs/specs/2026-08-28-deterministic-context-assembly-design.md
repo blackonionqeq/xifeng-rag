@@ -92,6 +92,7 @@ original_paragraph_range
 selected_paragraph_range
 original_text
 retrieval_scores
+input_rank                  候选进入组装器时的稳定顺序
 reranker_rank
 topic_title
 context_summary
@@ -186,7 +187,7 @@ JSON 的完整字符数，包括字段名、来源元数据、可选 AI 元信�
 
 | 错误码 | 含义 |
 |---|---|
-| `invalid_config` | 数量或字符预算非法 |
+| `invalid_config` | 数量预算非正，或字符预算不足以容纳空 JSON 包装（15 字符） |
 | `invalid_candidate` | 原文为空、来源缺失或范围非法 |
 | `budget_too_small` | 第一条有效候选无法放入预算 |
 | `render_invariant_failed` | 引用、数量、预算、渲染或哈希内部不一致 |

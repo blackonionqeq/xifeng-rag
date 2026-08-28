@@ -23,9 +23,17 @@ from xifeng_rag.chunking import (
     resolve_cleanup,
 )
 from xifeng_rag.config import Settings, load_settings
+from xifeng_rag.context_assembly import assemble_context
 from xifeng_rag.corpus import discover_markdown, scan_corpus
 from xifeng_rag.corpus_ui import run_corpus_dashboard
-from xifeng_rag.domain import BuildStatus, ProposalStatus, RetrievalMode, VersionStatus
+from xifeng_rag.domain import (
+    AssemblyResult,
+    BuildStatus,
+    ContextAssemblyConfigSnapshot,
+    ProposalStatus,
+    RetrievalMode,
+    VersionStatus,
+)
 from xifeng_rag.evaluation import run_evaluation, run_frozen_evaluation
 from xifeng_rag.evaluation_ui import run_evaluation_server
 from xifeng_rag.indexing import (
@@ -171,6 +179,36 @@ def _runtime(ctx: typer.Context) -> Runtime:
 def _abort(exc: Exception) -> None:
     typer.echo(f"错误：{exc}", err=True)
     raise typer.Exit(1) from exc
+
+
+def _assembly_config(settings: Settings) -> ContextAssemblyConfigSnapshot:
+    return ContextAssemblyConfigSnapshot.model_validate(
+        settings.context_assembly.model_dump()
+    )
+
+
+def _echo_assembly(result: AssemblyResult) -> None:
+    typer.echo(
+        f"组装状态：{result.status.value}；输入 {result.usage.input_candidate_count}，"
+        f"入选 {result.usage.selected_count}，排除 {result.usage.excluded_count}；"
+        f"渲染 {result.usage.rendered_context_chars} 字符"
+    )
+    for item in result.evidence_items:
+        typer.echo(
+            f"{item.citation_id}. {item.article_title} {item.article_version} "
+            f"¶{item.selected_paragraph_range[0]}–{item.selected_paragraph_range[1]} "
+            f"（输入排名 {item.input_rank}）"
+        )
+        if result.config_snapshot.include_ai_metadata:
+            typer.echo(f"   AI 话题：{item.topic_title or '—'}")
+            typer.echo(f"   AI 概括：{item.context_summary or '—'}")
+        typer.echo(f"   原文：{item.original_text}")
+    for item in result.excluded_candidates:
+        typer.echo(
+            f"排除：rank={item.original_rank} chunk={item.source_chunk_id} "
+            f"reason={item.reason.value} rendered_chars={item.rendered_chars}"
+        )
+    typer.echo(f"上下文 SHA-256：{result.rendered_context_sha256}")
 
 
 @app.command("init")
@@ -608,6 +646,10 @@ def search_command(
         typer.Option("--rerank-candidate-k", min=1, max=1000, help="覆盖重排候选深度"),
     ] = None,
     as_json: Annotated[bool, typer.Option("--json", help="输出完整结构化候选")] = False,
+    assemble_output: Annotated[
+        bool,
+        typer.Option("--assemble", help="将排序候选组装为本地证据上下文；不调用 Generator"),
+    ] = False,
 ) -> None:
     """搜索已批准话题块并展示原文引用。"""
     runtime = _runtime(ctx)
@@ -639,6 +681,15 @@ def search_command(
                     rerank_candidate_k or runtime.settings.reranker.candidate_k
                 ),
             )
+        if assemble_output:
+            result = assemble_context(candidates, _assembly_config(runtime.settings))
+            if as_json:
+                typer.echo(
+                    json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2)
+                )
+            else:
+                _echo_assembly(result)
+            return
         if as_json:
             typer.echo(
                 json.dumps([item.model_dump() for item in candidates], ensure_ascii=False, indent=2)

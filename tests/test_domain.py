@@ -1,4 +1,13 @@
-from xifeng_rag.domain import Topic, TopicProposal, validate_topic_coverage
+import pytest
+
+from xifeng_rag.domain import (
+    CompressionMethod,
+    EvidenceItem,
+    RetrievalScores,
+    Topic,
+    TopicProposal,
+    validate_topic_coverage,
+)
 
 
 def topic(start: int, end: int) -> Topic:
@@ -38,3 +47,20 @@ def test_legacy_content_role_maps_to_indexing_decision() -> None:
     )
     assert explicit.include_in_index
     assert "content_role" not in explicit.model_dump()
+
+
+def test_uncompressed_evidence_must_keep_the_original_range() -> None:
+    with pytest.raises(ValueError, match="完整原始范围"):
+        EvidenceItem(
+            citation_id="E1",
+            source_chunk_id="chunk-1",
+            article_id="article-1",
+            article_version="version-1",
+            article_title="自造文章",
+            original_paragraph_range=(1, 3),
+            selected_paragraph_range=(1, 2),
+            original_text="自造证据",
+            retrieval_scores=RetrievalScores(),
+            input_rank=1,
+            compression_method=CompressionMethod.NONE,
+        )

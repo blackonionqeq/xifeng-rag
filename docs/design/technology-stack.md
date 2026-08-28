@@ -37,6 +37,7 @@ RAG 核心、索引、模型调用、评测与 API 使用 Python。前端延后�
 | 离线语义分块 | Ollama standalone + `qwen3:4b-instruct-2507-q4_K_M` |
 | Embedding | 默认 `Qwen/Qwen3-Embedding-0.6B`；基线 `BAAI/bge-base-zh-v1.5` |
 | Reranker | 默认 `BAAI/bge-reranker-v2-m3`；后续对照 `Qwen/Qwen3-Reranker-0.6B` |
+| 上下文组装 | 自有确定性 Python 组件 + 规范 JSON |
 | CLI | Typer |
 | 本地管理、分块审核与评测策展页 | Python 标准库 HTTP 服务 + 原生 HTML/CSS/JavaScript |
 | API | FastAPI，阶段 2 加入 |
@@ -59,6 +60,10 @@ V1 基线使用 `sentence-transformers` 加载 `BAAI/bge-base-zh-v1.5`，文档�
 V0 已采用 `jieba.Tokenizer` 的独立实例完成本地 search-mode 分词，封装版本为
 `jieba-search-v1`。该选择是可替换的基线，后续分词器对照必须创建新的 Index Profile，
 不得覆盖已有实验索引。
+
+上下文组装不引入额外框架或 tokenizer 依赖。首版以完整 TopicChunk 数量和最终 JSON 字符数
+控制范围，默认最多 5 块、50,000 字符；这是一致、供应商无关的异常保护。未来 Generator
+适配器再负责供应商请求级 token 限制，不能用某个不匹配的本地 tokenizer 冒充精确计数。
 
 ## 4. Generator
 

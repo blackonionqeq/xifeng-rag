@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -7,7 +8,7 @@ from sqlalchemy import func, select
 from typer.testing import CliRunner
 
 from xifeng_rag.cli import _latest_pending_version_ids, app
-from xifeng_rag.domain import VersionStatus
+from xifeng_rag.domain import RetrievalCandidate, RetrievalScores, VersionStatus
 from xifeng_rag.storage import ArticleRow, ArticleVersionRow, ChunkProposalRow, Database
 
 runner = CliRunner()
@@ -146,6 +147,60 @@ def test_rerank_candidate_depth_option_is_validated_by_cli(tmp_path: Path) -> No
     )
     assert result.exit_code == 1
     assert "只能与 --rerank 一起使用" in result.output
+
+
+def test_search_assemble_json_uses_local_ranked_candidates(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        f"project_root: {tmp_path.as_posix()}\nstorage:\n  data_dir: data\n",
+        encoding="utf-8",
+    )
+    private_body = "只用于本地组装测试的自造证据"
+
+    def fake_search(*args, **kwargs):
+        del args, kwargs
+        return [
+            RetrievalCandidate(
+                chunk_id="chunk-1",
+                article_id="article-1",
+                article_version="version-1",
+                article_title="自造文章",
+                original_text=private_body,
+                paragraph_range=(1, 2),
+                retrieval_scores=RetrievalScores(bm25=1.0, bm25_rank=1),
+                source=["bm25"],
+                topic_title="AI 话题",
+                context_summary="AI 概括",
+            )
+        ]
+
+    def forbid_network(*args, **kwargs):
+        raise AssertionError("context assembly must not perform network requests")
+
+    monkeypatch.setattr("xifeng_rag.cli.search", fake_search)
+    monkeypatch.setattr("urllib.request.urlopen", forbid_network)
+    result = runner.invoke(
+        app,
+        [
+            "--config",
+            str(config),
+            "search",
+            "测试问题",
+            "--mode",
+            "bm25",
+            "--assemble",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["status"] == "ready"
+    assert payload["evidence_items"][0]["citation_id"] == "E1"
+    assert payload["evidence_items"][0]["original_text"] == private_body
+    assert "AI 话题" not in payload["rendered_context"]
 
 
 def test_chunk_proposal_selection_uses_only_latest_active_version(

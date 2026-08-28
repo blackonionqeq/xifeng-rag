@@ -40,6 +40,28 @@ class RetrievalMode(StrEnum):
     HYBRID = "hybrid"
 
 
+class AssemblyStatus(StrEnum):
+    READY = "ready"
+    NO_EVIDENCE = "no_evidence"
+
+
+class AssemblyExclusionReason(StrEnum):
+    DUPLICATE = "duplicate"
+    ITEM_LIMIT = "item_limit"
+    CHAR_BUDGET = "char_budget"
+
+
+class CompressionMethod(StrEnum):
+    NONE = "none"
+
+
+class AssemblyErrorCode(StrEnum):
+    INVALID_CONFIG = "invalid_config"
+    INVALID_CANDIDATE = "invalid_candidate"
+    BUDGET_TOO_SMALL = "budget_too_small"
+    RENDER_INVARIANT_FAILED = "render_invariant_failed"
+
+
 class ParagraphData(BaseModel):
     number: int = Field(ge=1)
     text: str = Field(min_length=1)
@@ -126,6 +148,71 @@ class RetrievalCandidate(BaseModel):
     source: list[str] = Field(default_factory=lambda: ["bm25"])
     topic_title: str | None = None
     context_summary: str | None = None
+
+
+class ContextAssemblyConfigSnapshot(BaseModel):
+    max_evidence_items: int
+    max_total_chars: int
+    include_ai_metadata: bool
+
+
+class EvidenceItem(BaseModel):
+    citation_id: str = Field(pattern=r"^E[1-9][0-9]*$")
+    source_chunk_id: str = Field(min_length=1)
+    article_id: str = Field(min_length=1)
+    article_version: str = Field(min_length=1)
+    article_title: str = Field(min_length=1)
+    original_paragraph_range: tuple[int, int]
+    selected_paragraph_range: tuple[int, int]
+    original_text: str = Field(min_length=1)
+    retrieval_scores: RetrievalScores
+    input_rank: int = Field(ge=1)
+    reranker_rank: int | None = Field(default=None, ge=1)
+    topic_title: str | None = None
+    context_summary: str | None = None
+    compression_method: CompressionMethod = CompressionMethod.NONE
+
+    @model_validator(mode="after")
+    def valid_evidence_ranges(self) -> EvidenceItem:
+        original_start, original_end = self.original_paragraph_range
+        selected_start, selected_end = self.selected_paragraph_range
+        if original_start < 1 or original_end < original_start:
+            raise ValueError("原始证据范围非法")
+        if selected_start < original_start or selected_end > original_end:
+            raise ValueError("选中证据范围必须位于原始范围内")
+        if selected_end < selected_start:
+            raise ValueError("选中证据范围非法")
+        if self.compression_method == CompressionMethod.NONE and (
+            self.selected_paragraph_range != self.original_paragraph_range
+        ):
+            raise ValueError("未压缩证据必须保留完整原始范围")
+        return self
+
+
+class ExcludedCandidate(BaseModel):
+    source_chunk_id: str
+    original_rank: int = Field(ge=1)
+    reason: AssemblyExclusionReason
+    rendered_chars: int = Field(ge=0)
+
+
+class AssemblyUsage(BaseModel):
+    input_candidate_count: int = Field(ge=0)
+    selected_count: int = Field(ge=0)
+    excluded_count: int = Field(ge=0)
+    original_text_chars: int = Field(ge=0)
+    ai_metadata_chars: int = Field(ge=0)
+    rendered_context_chars: int = Field(ge=0)
+
+
+class AssemblyResult(BaseModel):
+    status: AssemblyStatus
+    evidence_items: list[EvidenceItem]
+    excluded_candidates: list[ExcludedCandidate]
+    usage: AssemblyUsage
+    config_snapshot: ContextAssemblyConfigSnapshot
+    rendered_context: str
+    rendered_context_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 def validate_topic_coverage(proposal: TopicProposal, paragraph_count: int) -> list[str]:
