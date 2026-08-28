@@ -146,7 +146,9 @@ Index Build 上运行。旧的 JSON 文件评测入口暂时兼容保留。
 分析；该部分只能提供评价框架、风险和建议，不能凭模型记忆补充新的具体事实。
 
 DeepSeek 模型 ID 可能随账号与服务版本变化。先运行 `generator models` 查询实际可用 ID，
-再在本地配置的 `generator.model` 中设置；API 密钥仍只从进程环境或 Git 忽略的 `.env` 读取。
+命令会直接说明当前配置是否可用以及下一步怎么做。简短配置说明见
+[DeepSeek Generator 快速使用](docs/guides/deepseek-generator-setup.md)。API 密钥仍只从进程
+环境或 Git 忽略的 `.env` 读取。
 
 出题范围、Top-K 约束、AI 参考答案、答案要点、证据范围和不确定性的人工审核标准，见
 [评测问题编写与 AI 草案审核指南](docs/guides/evaluation-question-writing.md)。

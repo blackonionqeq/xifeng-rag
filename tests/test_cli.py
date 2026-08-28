@@ -314,6 +314,68 @@ def test_ask_discloses_scope_and_returns_validated_json(
     assert private_body not in result.stderr
 
 
+def test_generator_models_explains_when_current_model_is_available(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        f"project_root: {tmp_path.as_posix()}\nstorage:\n  data_dir: data\n",
+        encoding="utf-8",
+    )
+
+    class FakeDeepSeekClient:
+        def __init__(self, settings, api_key):
+            assert api_key == "test-key"
+            assert settings.model == "deepseek-v4-flash"
+
+        def list_models(self):
+            return ["deepseek-v4-flash", "deepseek-v4-pro"]
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    monkeypatch.setattr("xifeng_rag.cli.DeepSeekClient", FakeDeepSeekClient)
+    result = runner.invoke(
+        app, ["--config", str(config), "generator", "models"]
+    )
+
+    assert result.exit_code == 0
+    assert "当前配置：deepseek-v4-flash（可用）" in result.stdout
+    assert "无需修改模型配置" in result.stdout
+    assert 'xifeng ask "你的问题"' in result.stdout
+    assert "docs/guides/deepseek-generator-setup.md" in result.stdout
+
+
+def test_generator_models_shows_minimal_yaml_without_modifying_config(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config = tmp_path / "config.yaml"
+    original = (
+        f"project_root: {tmp_path.as_posix()}\n"
+        "storage:\n  data_dir: data\n"
+        "generator:\n  model: retired-model\n"
+    )
+    config.write_text(original, encoding="utf-8")
+
+    class FakeDeepSeekClient:
+        def __init__(self, settings, api_key):
+            assert settings.model == "retired-model"
+            assert api_key == "test-key"
+
+        def list_models(self):
+            return ["deepseek-v4-flash"]
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    monkeypatch.setattr("xifeng_rag.cli.DeepSeekClient", FakeDeepSeekClient)
+    result = runner.invoke(
+        app, ["--config", str(config), "generator", "models"]
+    )
+
+    assert result.exit_code == 0
+    assert "当前配置：retired-model（不可用）" in result.stdout
+    assert "config.local.yaml" in result.stdout
+    assert "generator:\n  model: deepseek-v4-flash" in result.stdout
+    assert config.read_text(encoding="utf-8") == original
+
+
 def test_chunk_proposal_selection_uses_only_latest_active_version(
     database: Database,
 ) -> None:

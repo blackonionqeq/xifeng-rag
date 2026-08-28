@@ -862,8 +862,24 @@ def generator_models(ctx: typer.Context) -> None:
         api_key = os.environ.get(settings.api_key_env)
         if not api_key:
             raise ValueError(f"环境变量未设置：{settings.api_key_env}")
-        for model_id in DeepSeekClient(settings, api_key).list_models():
-            typer.echo(model_id)
+        model_ids = DeepSeekClient(settings, api_key).list_models()
+        typer.echo("可用模型：")
+        for model_id in model_ids:
+            typer.echo(f"- {model_id}")
+        typer.echo()
+        available = settings.model in model_ids
+        state = "可用" if available else "不可用"
+        typer.echo(f"当前配置：{settings.model}（{state}）")
+        typer.echo("推荐：deepseek-v4-flash（当前纯文本 RAG 默认选择）")
+        config_path = runtime.settings.project_root / "config.local.yaml"
+        if available:
+            typer.echo("无需修改模型配置。")
+            typer.echo('下一步：uv run xifeng ask "你的问题" --mode hybrid --rerank')
+        else:
+            typer.echo(f"请在 {config_path} 中设置一个可用模型，例如：")
+            typer.echo("generator:")
+            typer.echo("  model: deepseek-v4-flash")
+        typer.echo("简短说明：docs/guides/deepseek-generator-setup.md")
     except Exception as exc:
         _abort(exc)
 
