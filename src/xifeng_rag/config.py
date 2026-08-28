@@ -53,7 +53,7 @@ class RerankerSettings(BaseModel):
     device: str = "auto"
     batch_size: int = Field(default=8, gt=0)
     max_pair_tokens: int = Field(default=1024, gt=0)
-    candidate_k: int = Field(default=20, gt=0, le=1000)
+    candidate_k: int = Field(default=5, gt=0, le=1000)
 
 
 class OllamaSettings(BaseModel):

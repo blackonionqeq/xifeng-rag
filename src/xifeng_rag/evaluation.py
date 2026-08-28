@@ -248,7 +248,9 @@ def run_frozen_evaluation(
     ]
     run_id = stable_id("eval", dataset.id, build.id, str(time.time_ns()), length=32)
     code_commit, worktree_dirty = _git_state()
-    reranker_metadata = reranker.metadata if reranker is not None else {}
+    reranker_metadata = dict(reranker.metadata) if reranker is not None else {}
+    if reranker is not None:
+        reranker_metadata["candidate_k"] = rerank_candidate_k
     truncated_count = _metadata_int(reranker_metadata, "truncated_candidate_count") or 0
     session.add(
         EvaluationRunRow(

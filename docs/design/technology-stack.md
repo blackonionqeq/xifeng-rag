@@ -47,6 +47,10 @@ Qdrant 第一阶段使用进程内本地持久化模式，不要求启动独立�
 
 BM25 与 Dense 检索保持逻辑独立，通过自有 RRF 实现融合，便于保存各路原始排名和完成消融实验。
 
+Windows 本机推理通过 uv 的平台化 source 使用 PyTorch 官方 CUDA 13.0 wheel；其他平台继续
+从默认 Python 索引解析 Torch。当前开发机 NVIDIA 驱动报告兼容 CUDA 13.1，因此选择 cu130。
+PyTorch wheel 自带运行所需 CUDA 库；项目不编译 CUDA 扩展，不要求单独安装 CUDA Toolkit。
+
 V1 基线使用 `sentence-transformers` 加载 `BAAI/bge-base-zh-v1.5`，文档与查询向量归一化后
 写入每个 Index Build 独立的 Qdrant local storage。查询支持 BM25、Dense 与 Hybrid 三种
 显式模式；当前 34 块 pilot 语料的 Hybrid 默认使用两路 Top-5 和 `rrf_k=60`，不直接混合

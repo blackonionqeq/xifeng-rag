@@ -85,7 +85,11 @@ def test_sentence_transformers_provider_batches_and_marks_pair_truncation(
     class FakeTokenizer:
         def __call__(self, query: str, passage: str, **kwargs):
             assert query == "问题"
-            assert kwargs == {"add_special_tokens": True, "truncation": False}
+            assert kwargs == {
+                "add_special_tokens": True,
+                "truncation": False,
+                "verbose": False,
+            }
             return {"input_ids": list(range(20 if "很长" in passage else 5))}
 
     class FakeCrossEncoder:

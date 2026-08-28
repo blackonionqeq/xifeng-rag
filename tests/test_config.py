@@ -122,7 +122,7 @@ def test_embedding_cache_path_and_retrieval_defaults(tmp_path: Path) -> None:
     assert settings.retrieval.rrf_k == 60
     assert settings.reranker.model_id == "BAAI/bge-reranker-v2-m3"
     assert settings.reranker.max_pair_tokens == 1024
-    assert settings.reranker.candidate_k == 20
+    assert settings.reranker.candidate_k == 5
 
 
 def test_reranker_cache_path_resolves_from_project_root(tmp_path: Path) -> None:

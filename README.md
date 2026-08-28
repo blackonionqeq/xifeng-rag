@@ -123,7 +123,9 @@ Index Build 上运行。旧的 JSON 文件评测入口暂时兼容保留。
 都会至少召回 `reranker.candidate_k` 个候选，RRF 去重融合后由本地 Cross-Encoder 按
 `query + 文章标题 + original_text` 精排。默认 pair 总预算为 1024 tokens，超长候选的截断
 会写入候选调试信息和冻结评测详情；模型或推理失败时命令直接失败，不静默回退到 RRF。
-可用 `--rerank-candidate-k` 在单次搜索或评测中覆盖候选深度，便于运行 5/10/20/30 对照。
+默认候选深度为 5，这是当前 6 题 pilot 上不损失证据覆盖且能改善 MRR/nDCG 的保守选择。
+可用 `--rerank-candidate-k` 在单次搜索或评测中覆盖候选深度，便于在正式 dev benchmark
+扩充后重新运行 5/10/20/30 对照。
 
 出题范围、Top-K 约束、AI 参考答案、答案要点、证据范围和不确定性的人工审核标准，见
 [评测问题编写与 AI 草案审核指南](docs/guides/evaluation-question-writing.md)。

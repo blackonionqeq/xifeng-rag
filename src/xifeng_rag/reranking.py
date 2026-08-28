@@ -123,7 +123,6 @@ class SentenceTransformersReranker:
             "device": resolved_model_device,
             "batch_size": batch_size,
             "max_pair_tokens": max_pair_tokens,
-            "candidate_k": None,
             "input_template_version": INPUT_TEMPLATE_VERSION,
             "load_duration_ms": round((time.perf_counter() - started) * 1000, 3),
             "process_memory_delta_bytes": memory_delta,
@@ -149,6 +148,7 @@ class SentenceTransformersReranker:
             passage,
             add_special_tokens=True,
             truncation=False,
+            verbose=False,
         )
         input_ids = encoded.get("input_ids", [])
         return len(input_ids) > self._max_pair_tokens

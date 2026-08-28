@@ -402,6 +402,7 @@ def test_frozen_evaluation_records_reranker_metadata(
             rerank_candidate_k=7,
         )
         assert outcome["reranker"]["model_id"] == "fake-reranker"  # type: ignore[index]
+        assert outcome["reranker"]["candidate_k"] == 7  # type: ignore[index]
     with database.session() as session:
         run = session.scalar(select(EvaluationRunRow))
         assert run is not None

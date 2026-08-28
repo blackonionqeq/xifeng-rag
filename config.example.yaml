@@ -25,7 +25,7 @@ reranker:
   device: auto
   batch_size: 8
   max_pair_tokens: 1024
-  candidate_k: 20
+  candidate_k: 5
 ollama:
   executable: D:/ai-tools/ollama/ollama.exe
   model_dir: D:/ai-models/ollama
