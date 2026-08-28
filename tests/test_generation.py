@@ -77,6 +77,28 @@ def answer_payload(
     )
 
 
+def contradictory_insufficient_payload(
+    *,
+    limitations: list[str] | None = None,
+    evidence_ids: list[str] | None = None,
+) -> str:
+    return json.dumps(
+        {
+            "status": "insufficient_evidence",
+            "grounded_sections": [
+                {
+                    "text": "现有资料只能支持部分变化。",
+                    "statement_type": "inference",
+                    "evidence_ids": evidence_ids or ["E1"],
+                }
+            ],
+            "supplementary_analysis": None,
+            "limitations": limitations or [],
+        },
+        ensure_ascii=False,
+    )
+
+
 class FakeClient:
     def __init__(self, responses: list[str]) -> None:
         self.responses = responses
@@ -199,6 +221,50 @@ def test_partial_and_insufficient_answers_require_limitations() -> None:
         "问题", context(), SupplementPolicy.OFF
     )
     assert insufficient_result.answer.status == AnswerStatus.INSUFFICIENT_EVIDENCE
+
+
+def test_insufficient_with_valid_sections_is_normalized_to_partial() -> None:
+    client = FakeClient(
+        [contradictory_insufficient_payload(limitations=["缺少完整时间线"])]
+    )
+
+    result = EvidenceBoundGenerator(client).generate(
+        "职业身份如何变化？", context(), SupplementPolicy.OFF
+    )
+
+    assert result.request_count == 1
+    assert result.answer.status == AnswerStatus.PARTIALLY_ANSWERED
+    assert result.answer.grounded_sections[0].evidence_ids == ["E1"]
+    assert result.answer.limitations == ["缺少完整时间线"]
+    assert result.generation_metadata["status_normalized"] is True
+    assert result.generation_metadata["original_status"] == "insufficient_evidence"
+    assert result.generation_metadata["normalized_status"] == "partially_answered"
+
+
+def test_insufficient_with_sections_but_no_limitations_is_not_normalized() -> None:
+    content = contradictory_insufficient_payload()
+    client = FakeClient([content, content])
+
+    with pytest.raises(AnswerGenerationError, match="insufficient_evidence"):
+        EvidenceBoundGenerator(client).generate(
+            "职业身份如何变化？", context(), SupplementPolicy.OFF
+        )
+
+    assert len(client.prompts) == 2
+
+
+def test_insufficient_with_unknown_citation_is_not_normalized() -> None:
+    content = contradictory_insufficient_payload(
+        limitations=["缺少完整时间线"], evidence_ids=["E9"]
+    )
+    client = FakeClient([content, content])
+
+    with pytest.raises(AnswerGenerationError, match="不存在的证据 ID"):
+        EvidenceBoundGenerator(client).generate(
+            "职业身份如何变化？", context(), SupplementPolicy.OFF
+        )
+
+    assert len(client.prompts) == 2
 
 
 def test_deepseek_http_errors_are_classified_without_response_body(monkeypatch) -> None:

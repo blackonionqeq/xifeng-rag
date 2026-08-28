@@ -13,7 +13,7 @@ from xifeng_rag.config import GeneratorSettings
 from xifeng_rag.domain import AssemblyResult, AssemblyStatus, EvidenceItem
 from xifeng_rag.structured_generation import GenerationResult, StructuredGenerator
 
-GENERATOR_PROMPT_VERSION = "deepseek-grounded-answer-v1"
+GENERATOR_PROMPT_VERSION = "deepseek-grounded-answer-v2"
 _CITATION_PATTERN = re.compile(r"(?<![A-Za-z0-9_])E[1-9][0-9]*(?![A-Za-z0-9_])")
 
 
@@ -136,11 +136,42 @@ def _parse_answer(
     content: str,
     context: AssemblyResult,
     supplement: SupplementPolicy,
-) -> GeneratedAnswer:
+) -> tuple[GeneratedAnswer, dict[str, object]]:
     payload = json.loads(content)
-    answer = GeneratedAnswer.model_validate(payload)
+    normalization_metadata: dict[str, object] = {}
+    try:
+        answer = GeneratedAnswer.model_validate(payload)
+    except ValidationError as original_error:
+        normalized_payload = _partial_answer_payload(payload)
+        if normalized_payload is None:
+            raise original_error
+        answer = GeneratedAnswer.model_validate(normalized_payload)
+        normalization_metadata = {
+            "status_normalized": True,
+            "original_status": AnswerStatus.INSUFFICIENT_EVIDENCE.value,
+            "normalized_status": AnswerStatus.PARTIALLY_ANSWERED.value,
+        }
     _validate_evidence_and_policy(answer, context, supplement)
-    return answer
+    return answer, normalization_metadata
+
+
+def _partial_answer_payload(payload: object) -> dict[str, object] | None:
+    if not isinstance(payload, dict):
+        return None
+    sections = payload.get("grounded_sections")
+    limitations = payload.get("limitations")
+    normalizable = (
+        payload.get("status") == AnswerStatus.INSUFFICIENT_EVIDENCE.value
+        and isinstance(sections, list)
+        and bool(sections)
+        and isinstance(limitations, list)
+        and bool(limitations)
+    )
+    if not normalizable:
+        return None
+    normalized: dict[str, object] = dict(payload)
+    normalized["status"] = AnswerStatus.PARTIALLY_ANSWERED.value
+    return normalized
 
 
 def _generation_prompt(
@@ -234,13 +265,16 @@ class EvidenceBoundGenerator:
             result = self.client.generate(prompt, schema)
             metadata = dict(result.metadata)
             try:
-                answer = _parse_answer(result.content, context, supplement)
+                answer, normalization_metadata = _parse_answer(
+                    result.content, context, supplement
+                )
             except (json.JSONDecodeError, ValidationError, ValueError) as exc:
                 last_error = _safe_validation_detail(exc)
                 if request_count == 2:
                     break
                 prompt = _repair_prompt(original_prompt, result.content, last_error)
                 continue
+            metadata.update(normalization_metadata)
             return AnswerGenerationResult(
                 answer=answer,
                 request_count=request_count,
