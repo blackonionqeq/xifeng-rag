@@ -17,6 +17,14 @@ retrieval:
   bm25_candidate_k: 5
   dense_candidate_k: 5
   rrf_k: 60
+
+query_rewrite:
+  provider: ollama
+  max_variants: 1
+  original_weight: 1.0
+  rewrite_total_weight: 0.7
+  fusion_rrf_k: 60
+  candidate_limit: 128
 layered:
   splitter_version: atomic-greedy-v1
   target_chars: 400

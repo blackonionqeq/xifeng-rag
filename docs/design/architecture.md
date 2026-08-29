@@ -96,9 +96,15 @@ original_text
 paragraph_range
 retrieval_scores
 source
+query_matches（仅多查询实验）
 ```
 
 其中 `source` 标识 dense、bm25、graph 等候选来源。未来 GraphRAG 只需产生相同结构的候选，再进入现有融合、重排和生成流程。
+
+显式启用的 `QueryRewriter` 位于 Retrieval Profile 之上：原问题和经过校验的保守改写分别召回，
+按候选 ID 去重并执行查询级加权 RRF，最后把原问题作为主要语义约束、等价改写作为辅助理解，
+组合后进行一次本地重排。改写失败只退回原问题，不切换外部 provider。详细协议见
+[`docs/specs/2026-08-29-conservative-query-rewrite-design.md`](../specs/2026-08-29-conservative-query-rewrite-design.md)。
 
 ## 6. 确定性上下文组装
 

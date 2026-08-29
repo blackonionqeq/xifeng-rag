@@ -80,6 +80,7 @@ TopicChunk，并额外报告 evidence coverage@K。
 - Recall@K；
 - MRR；
 - nDCG。
+- 查询改写前后每题证据排名变化、无效改写率与改写失败率。
 
 ### 引用
 
@@ -99,6 +100,7 @@ TopicChunk，并额外报告 evidence coverage@K。
 - 全量索引耗时；
 - 新增单篇文章的增量耗时；
 - 查询延迟；
+- 查询改写延迟及其占总延迟的比例；
 - 显存与内存占用。
 
 ## 4. 实验纪律

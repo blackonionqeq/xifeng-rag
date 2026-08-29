@@ -58,6 +58,16 @@ from xifeng_rag.indexing import (
     record_build_failure,
     search,
     search_layered,
+    search_layered_with_query_variants,
+    search_with_query_variants,
+)
+from xifeng_rag.query_rewrite import (
+    NoopQueryRewriter,
+    OllamaQueryRewriter,
+    QueryRewriter,
+    QueryRewriteResult,
+    QueryRewriteStatus,
+    build_query_variants,
 )
 from xifeng_rag.reranking import SentenceTransformersReranker
 from xifeng_rag.review_ui import IndexBuilder, run_review_server
@@ -114,6 +124,36 @@ def _reranker_provider(settings: Settings) -> SentenceTransformersReranker:
         batch_size=settings.reranker.batch_size,
         max_pair_tokens=settings.reranker.max_pair_tokens,
     )
+
+
+def _query_rewriter_provider(settings: Settings) -> QueryRewriter:
+    selected = settings.query_rewrite.provider
+    if selected == "ollama":
+        return OllamaQueryRewriter(
+            OllamaClient(settings.ollama),
+            settings.ollama.model,
+            max_retries=settings.ollama.max_retries,
+        )
+    if selected == "noop":
+        return NoopQueryRewriter()
+    raise ValueError(f"不支持的 Query Rewrite provider：{selected}")
+
+
+def _echo_query_rewrite(result: QueryRewriteResult) -> None:
+    if result.status in {QueryRewriteStatus.SUCCESS, QueryRewriteStatus.PARTIAL}:
+        typer.echo(
+            f"查询改写：{result.provider}/{result.model_id or '—'}，"
+            f"{len(result.variants)} 条，{result.latency_ms:.0f} ms",
+            err=True,
+        )
+        for variant in result.variants:
+            typer.echo(f"  - {variant}", err=True)
+        return
+    if result.status == QueryRewriteStatus.FAILED:
+        typer.echo(
+            f"查询改写失败（{result.diagnostic or 'unknown'}），已退回原问题检索。",
+            err=True,
+        )
 
 
 def _hybrid_index_builder(settings: Settings) -> IndexBuilder:
@@ -220,13 +260,41 @@ def _search_with_profile(
     reranker: SentenceTransformersReranker | None,
     rerank_candidate_k: int,
     layered: bool,
+    rewrite_result: QueryRewriteResult | None = None,
 ) -> list[RetrievalCandidate]:
+    query_variants = None
+    if rewrite_result is not None and rewrite_result.variants:
+        rewrite_settings = runtime.settings.query_rewrite
+        query_variants = build_query_variants(
+            query,
+            rewrite_result.variants,
+            original_weight=rewrite_settings.original_weight,
+            rewrite_total_weight=rewrite_settings.rewrite_total_weight,
+        )
     if layered:
         if build is None:
             raise ValueError("--layered 必须同时用 --build 指定分层实验索引")
         if selected_mode != RetrievalMode.HYBRID or provider is None or reranker is None:
             raise ValueError("--layered 只支持显式启用的 Hybrid + Reranker")
         settings = runtime.settings.layered
+        if query_variants is not None:
+            rewrite_settings = runtime.settings.query_rewrite
+            return search_layered_with_query_variants(
+                session,
+                query,
+                query_variants,
+                build_id=build,
+                embedding_provider=provider,
+                reranker=reranker,
+                top_k=top_k,
+                parent_candidate_k=settings.parent_candidate_k,
+                child_candidate_k=settings.child_candidate_k,
+                candidate_limit=settings.candidate_limit,
+                rrf_k=runtime.settings.retrieval.rrf_k,
+                neighbor_window=settings.neighbor_window,
+                query_fusion_rrf_k=rewrite_settings.fusion_rrf_k,
+                query_candidate_limit=rewrite_settings.candidate_limit,
+            )
         return search_layered(
             session,
             query,
@@ -239,6 +307,26 @@ def _search_with_profile(
             candidate_limit=settings.candidate_limit,
             rrf_k=runtime.settings.retrieval.rrf_k,
             neighbor_window=settings.neighbor_window,
+        )
+    if query_variants is not None:
+        if selected_mode != RetrievalMode.HYBRID or provider is None or reranker is None:
+            raise ValueError("--rewrite 只支持显式启用的 Hybrid + Reranker")
+        rewrite_settings = runtime.settings.query_rewrite
+        return search_with_query_variants(
+            session,
+            query,
+            query_variants,
+            top_k=top_k,
+            build_id=build,
+            mode=selected_mode,
+            embedding_provider=provider,
+            bm25_candidate_k=runtime.settings.retrieval.bm25_candidate_k,
+            dense_candidate_k=runtime.settings.retrieval.dense_candidate_k,
+            rrf_k=runtime.settings.retrieval.rrf_k,
+            reranker=reranker,
+            rerank_candidate_k=rerank_candidate_k,
+            query_fusion_rrf_k=rewrite_settings.fusion_rrf_k,
+            query_candidate_limit=rewrite_settings.candidate_limit,
         )
     return search(
         session,
@@ -768,6 +856,9 @@ def search_command(
     layered: Annotated[
         bool, typer.Option("--layered", help="使用显式指定的分层父子实验索引")
     ] = False,
+    rewrite: Annotated[
+        bool, typer.Option("--rewrite", help="使用本地模型生成保守查询改写")
+    ] = False,
     as_json: Annotated[bool, typer.Option("--json", help="输出完整结构化候选")] = False,
     assemble_output: Annotated[
         bool,
@@ -778,6 +869,7 @@ def search_command(
     runtime = _runtime(ctx)
     provider = None
     reranker = None
+    rewrite_result = None
     try:
         if rerank_candidate_k is not None and not rerank:
             raise ValueError("--rerank-candidate-k 只能与 --rerank 一起使用")
@@ -790,6 +882,15 @@ def search_command(
             raise ValueError("--layered 的候选深度由 layered 配置控制")
         if rerank and selected_mode != RetrievalMode.HYBRID:
             raise ValueError("--rerank 第一版只支持 --mode hybrid")
+        if rewrite and not rerank:
+            raise ValueError("--rewrite 必须同时启用 --rerank")
+        if rewrite and selected_mode != RetrievalMode.HYBRID:
+            raise ValueError("--rewrite 第一版只支持 --mode hybrid")
+        if rewrite:
+            rewrite_result = _query_rewriter_provider(runtime.settings).rewrite(
+                query, runtime.settings.query_rewrite.max_variants
+            )
+            _echo_query_rewrite(rewrite_result)
         if selected_mode in {RetrievalMode.DENSE, RetrievalMode.HYBRID}:
             provider = _embedding_provider(runtime.settings)
         if rerank:
@@ -808,6 +909,7 @@ def search_command(
                     rerank_candidate_k or runtime.settings.reranker.candidate_k
                 ),
                 layered=layered,
+                rewrite_result=rewrite_result,
             )
         if assemble_output:
             result = assemble_context(candidates, _assembly_config(runtime.settings))
@@ -863,6 +965,9 @@ def ask_command(
     layered: Annotated[
         bool, typer.Option("--layered", help="使用显式指定的分层父子实验索引")
     ] = False,
+    rewrite: Annotated[
+        bool, typer.Option("--rewrite", help="使用本地模型生成保守查询改写")
+    ] = False,
     supplement: Annotated[
         SupplementPolicy,
         typer.Option("--supplement", help="模型补充分析策略：auto、on 或 off"),
@@ -873,6 +978,7 @@ def ask_command(
     runtime = _runtime(ctx)
     provider = None
     reranker = None
+    rewrite_result = None
     try:
         if rerank_candidate_k is not None and not rerank:
             raise ValueError("--rerank-candidate-k 只能与 --rerank 一起使用")
@@ -885,6 +991,15 @@ def ask_command(
             raise ValueError("--layered 的候选深度由 layered 配置控制")
         if rerank and selected_mode != RetrievalMode.HYBRID:
             raise ValueError("--rerank 第一版只支持 --mode hybrid")
+        if rewrite and not rerank:
+            raise ValueError("--rewrite 必须同时启用 --rerank")
+        if rewrite and selected_mode != RetrievalMode.HYBRID:
+            raise ValueError("--rewrite 第一版只支持 --mode hybrid")
+        if rewrite:
+            rewrite_result = _query_rewriter_provider(runtime.settings).rewrite(
+                question, runtime.settings.query_rewrite.max_variants
+            )
+            _echo_query_rewrite(rewrite_result)
         if selected_mode in {RetrievalMode.DENSE, RetrievalMode.HYBRID}:
             provider = _embedding_provider(runtime.settings)
         if rerank:
@@ -903,6 +1018,7 @@ def ask_command(
                     rerank_candidate_k or runtime.settings.reranker.candidate_k
                 ),
                 layered=layered,
+                rewrite_result=rewrite_result,
             )
         context = assemble_context(candidates, _assembly_config(runtime.settings))
         if context.status == AssemblyStatus.NO_EVIDENCE:
@@ -998,6 +1114,9 @@ def eval_run(
     layered: Annotated[
         bool, typer.Option("--layered", help="使用显式指定的分层父子实验索引")
     ] = False,
+    rewrite: Annotated[
+        bool, typer.Option("--rewrite", help="使用本地模型生成保守查询改写")
+    ] = False,
     layered_mode: Annotated[
         LayeredRetrievalMode,
         typer.Option("--layered-mode", help="分层实验召回：child 或 parent-child"),
@@ -1011,6 +1130,7 @@ def eval_run(
     runtime = _runtime(ctx)
     provider = None
     reranker = None
+    query_rewriter = None
     try:
         if rerank_candidate_k is not None and not rerank:
             raise ValueError("--rerank-candidate-k 只能与 --rerank 一起使用")
@@ -1033,6 +1153,14 @@ def eval_run(
         )
         if rerank and selected_mode != RetrievalMode.HYBRID:
             raise ValueError("--rerank 第一版只支持 --mode hybrid 的冻结评测")
+        if rewrite and legacy_path.is_file():
+            raise ValueError("--rewrite 只支持数据库中的冻结评测集")
+        if rewrite and not rerank:
+            raise ValueError("--rewrite 必须同时启用 --rerank")
+        if rewrite and selected_mode != RetrievalMode.HYBRID:
+            raise ValueError("--rewrite 第一版只支持 --mode hybrid")
+        if rewrite:
+            query_rewriter = _query_rewriter_provider(runtime.settings)
         if selected_mode in {RetrievalMode.DENSE, RetrievalMode.HYBRID}:
             provider = _embedding_provider(runtime.settings)
         if rerank:
@@ -1069,6 +1197,20 @@ def eval_run(
                         else runtime.settings.layered.neighbor_window
                     ),
                     layered_mode=layered_mode,
+                    query_rewriter=query_rewriter,
+                    rewrite_max_variants=runtime.settings.query_rewrite.max_variants,
+                    rewrite_original_weight=(
+                        runtime.settings.query_rewrite.original_weight
+                    ),
+                    rewrite_total_weight=(
+                        runtime.settings.query_rewrite.rewrite_total_weight
+                    ),
+                    rewrite_fusion_rrf_k=(
+                        runtime.settings.query_rewrite.fusion_rrf_k
+                    ),
+                    rewrite_candidate_limit=(
+                        runtime.settings.query_rewrite.candidate_limit
+                    ),
                 )
             )
         typer.echo(json.dumps(outcome, ensure_ascii=False, indent=2))

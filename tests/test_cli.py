@@ -9,6 +9,7 @@ from typer.testing import CliRunner
 
 from xifeng_rag.cli import _latest_pending_version_ids, app
 from xifeng_rag.domain import RetrievalCandidate, RetrievalScores, VersionStatus
+from xifeng_rag.query_rewrite import QueryRewriteResult, QueryRewriteStatus
 from xifeng_rag.storage import ArticleRow, ArticleVersionRow, ChunkProposalRow, Database
 from xifeng_rag.structured_generation import GenerationResult
 
@@ -171,6 +172,148 @@ def test_rerank_candidate_depth_option_is_validated_by_cli(tmp_path: Path) -> No
     )
     assert result.exit_code == 1
     assert "只能与 --rerank 一起使用" in result.output
+
+
+def test_search_rewrite_requires_reranker(tmp_path: Path) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        f"project_root: {tmp_path.as_posix()}\nstorage:\n  data_dir: data\n",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        ["--config", str(config), "search", "问题", "--mode", "hybrid", "--rewrite"],
+    )
+
+    assert result.exit_code == 1
+    assert "--rewrite 必须同时启用 --rerank" in result.output
+
+
+def test_search_rewrite_uses_variants_and_keeps_json_on_stdout(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        f"project_root: {tmp_path.as_posix()}\nstorage:\n  data_dir: data\n",
+        encoding="utf-8",
+    )
+
+    class Closable:
+        def close(self) -> None:
+            pass
+
+    class FakeRewriter:
+        def rewrite(self, query, max_variants):
+            assert query == "原问题"
+            assert max_variants == 1
+            return QueryRewriteResult(
+                status=QueryRewriteStatus.SUCCESS,
+                variants=["作者本人先后担任过哪些职位？"],
+                provider="fake",
+                model_id="fake-model",
+                latency_ms=1,
+            )
+
+    def fake_multi_search(session, original_query, query_variants, **kwargs):
+        del session, kwargs
+        assert original_query == "原问题"
+        assert [item.text for item in query_variants] == [
+            "原问题",
+            "作者本人先后担任过哪些职位？",
+        ]
+        return [
+            RetrievalCandidate(
+                chunk_id="chunk-1",
+                article_id="article-1",
+                article_version="version-1",
+                article_title="自造文章",
+                original_text="自造证据",
+                paragraph_range=(1, 1),
+                retrieval_scores=RetrievalScores(reranker=1.0, reranker_rank=1),
+            )
+        ]
+
+    monkeypatch.setattr(
+        "xifeng_rag.cli._query_rewriter_provider", lambda settings: FakeRewriter()
+    )
+    monkeypatch.setattr("xifeng_rag.cli._embedding_provider", lambda settings: Closable())
+    monkeypatch.setattr("xifeng_rag.cli._reranker_provider", lambda settings: Closable())
+    monkeypatch.setattr("xifeng_rag.cli.search_with_query_variants", fake_multi_search)
+
+    result = runner.invoke(
+        app,
+        [
+            "--config",
+            str(config),
+            "search",
+            "原问题",
+            "--mode",
+            "hybrid",
+            "--rerank",
+            "--rewrite",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)[0]["chunk_id"] == "chunk-1"
+    assert "作者本人先后担任过哪些职位" in result.stderr
+
+
+def test_search_rewrite_failure_falls_back_to_original_query(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        f"project_root: {tmp_path.as_posix()}\nstorage:\n  data_dir: data\n",
+        encoding="utf-8",
+    )
+
+    class Closable:
+        def close(self) -> None:
+            pass
+
+    class FailedRewriter:
+        def rewrite(self, query, max_variants):
+            del query, max_variants
+            return QueryRewriteResult(
+                status=QueryRewriteStatus.FAILED,
+                provider="fake",
+                latency_ms=1,
+                diagnostic="RuntimeError",
+            )
+
+    def fake_search(session, query, *args, **kwargs):
+        del session, args, kwargs
+        assert query == "原问题"
+        return []
+
+    monkeypatch.setattr(
+        "xifeng_rag.cli._query_rewriter_provider", lambda settings: FailedRewriter()
+    )
+    monkeypatch.setattr("xifeng_rag.cli._embedding_provider", lambda settings: Closable())
+    monkeypatch.setattr("xifeng_rag.cli._reranker_provider", lambda settings: Closable())
+    monkeypatch.setattr("xifeng_rag.cli.search", fake_search)
+
+    result = runner.invoke(
+        app,
+        [
+            "--config",
+            str(config),
+            "search",
+            "原问题",
+            "--mode",
+            "hybrid",
+            "--rerank",
+            "--rewrite",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert json.loads(result.stdout) == []
+    assert "已退回原问题检索" in result.stderr
 
 
 def test_search_assemble_json_uses_local_ranked_candidates(

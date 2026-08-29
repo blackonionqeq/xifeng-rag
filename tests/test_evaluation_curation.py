@@ -33,6 +33,7 @@ from xifeng_rag.evaluation_ui import (
     create_evaluation_server,
 )
 from xifeng_rag.layered_retrieval import ChildManifestEntry
+from xifeng_rag.query_rewrite import QueryRewriteResult, QueryRewriteStatus
 from xifeng_rag.storage import (
     ApprovedManifestRow,
     ArticleRow,
@@ -412,6 +413,77 @@ def test_frozen_evaluation_records_reranker_metadata(
         assert run.reranker_candidate_k == 7
         assert run.reranker_max_pair_tokens == 128
         assert run.reranker_truncated_candidate_count == 1
+        assert "自造原文" not in run.details_json
+
+
+def test_frozen_evaluation_records_query_rewrite_details(
+    database: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset_id, question_id = _draft_question(database, tmp_path)
+    with database.session() as session:
+        save_reviewed_answer(session, question_id, _review_value())
+        freeze_dataset(session, dataset_id)
+
+    class FakeRewriter:
+        def rewrite(self, query, max_variants):
+            assert max_variants == 1
+            return QueryRewriteResult(
+                status=QueryRewriteStatus.SUCCESS,
+                variants=[f"明确主体：{query}"],
+                provider="fake-rewriter",
+                model_id="fake-model",
+                latency_ms=2,
+            )
+
+    class FakeProvider:
+        pass
+
+    class FakeReranker:
+        @property
+        def metadata(self) -> dict[str, object]:
+            return {"provider": "fake-reranker"}
+
+    def fake_multi_search(session, original_query, query_variants, **kwargs):
+        del session, kwargs
+        assert original_query
+        assert len(query_variants) == 2
+        return [
+            RetrievalCandidate(
+                chunk_id="chunk_eval_1",
+                article_id="article_eval_test",
+                article_version="version_eval_test",
+                article_title="自造评测文章",
+                original_text="不写入运行详情的自造原文",
+                paragraph_range=(1, 2),
+                retrieval_scores=RetrievalScores(reranker=0.9, reranker_rank=1),
+            )
+        ]
+
+    monkeypatch.setattr(
+        "xifeng_rag.evaluation.search_with_query_variants", fake_multi_search
+    )
+    with database.session() as session:
+        outcome = run_frozen_evaluation(
+            session,
+            dataset_id,
+            k=1,
+            mode=RetrievalMode.HYBRID,
+            embedding_provider=FakeProvider(),  # type: ignore[arg-type]
+            reranker=FakeReranker(),  # type: ignore[arg-type]
+            query_rewriter=FakeRewriter(),
+        )
+
+    rewrite = outcome["query_rewrite"]
+    assert isinstance(rewrite, dict)
+    assert rewrite["provider"] == "fake-rewriter"
+    metrics = outcome["metrics"]
+    assert isinstance(metrics, dict)
+    assert metrics["rewrite_failure_rate"] == 0.0
+    with database.session() as session:
+        run = session.scalar(select(EvaluationRunRow).order_by(EvaluationRunRow.created_at.desc()))
+        assert run is not None
+        details = json.loads(run.details_json)
+        assert details[0]["query_rewrite"]["variants"]
         assert "自造原文" not in run.details_json
 
 

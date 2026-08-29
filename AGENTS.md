@@ -100,6 +100,7 @@ D:\codes\projects\test-reverse-wechat-official-accounts-paid-article\saved_artic
 - `EmbeddingTextBuilder`
 - `EmbeddingProvider`
 - `Reranker`
+- `QueryRewriter`
 - `Generator`
 
 使用普通、显式的 Python 接口和配置即可。除非实际需求已经出现，否则不要加入动态插件发现、注册表、复杂依赖注入或通用工作流引擎。

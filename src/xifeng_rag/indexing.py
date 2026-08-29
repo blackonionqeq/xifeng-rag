@@ -39,6 +39,11 @@ from xifeng_rag.layered_retrieval import (
     validate_candidate_limit,
     write_child_manifest,
 )
+from xifeng_rag.query_rewrite import (
+    QueryVariant,
+    augmented_rerank_query,
+    weighted_query_fusion,
+)
 from xifeng_rag.reranking import Reranker, rerank_candidates
 from xifeng_rag.storage import (
     ArticleRow,
@@ -1156,6 +1161,18 @@ def _expand_layered_neighbors(
                             for source in member.layer_sources
                         }
                     ),
+                    "query_matches": sorted(
+                        {
+                            (
+                                match.query_index,
+                                match.query_kind,
+                                match.rank,
+                            ): match
+                            for member in typed_members
+                            for match in member.query_matches
+                        }.values(),
+                        key=lambda match: (match.query_index, match.rank),
+                    ),
                 }
             )
         )
@@ -1165,25 +1182,24 @@ def _expand_layered_neighbors(
     )
 
 
-def search_layered(
+def _retrieve_layered_candidates(
     session: Session,
     query: str,
     *,
     build_id: str,
     embedding_provider: EmbeddingProvider,
-    reranker: Reranker,
-    top_k: int = 5,
     parent_candidate_k: int = 5,
     child_candidate_k: int = 20,
     candidate_limit: int = 128,
     rrf_k: int = 60,
-    neighbor_window: int = 1,
     layer_mode: LayeredRetrievalMode | str = LayeredRetrievalMode.PARENT_CHILD,
-) -> list[RetrievalCandidate]:
+) -> tuple[
+    list[RetrievalCandidate],
+    list[ChildManifestEntry],
+    dict[tuple[str, int], str],
+]:
     if not query.strip():
         raise ValueError("查询不能为空")
-    if top_k <= 0:
-        raise ValueError("top_k 必须大于 0")
     build = session.get(IndexBuildRow, build_id)
     if build is None or build.status not in {
         BuildStatus.READY.value,
@@ -1297,14 +1313,99 @@ def search_layered(
                 context_summary=parent.context_summary,
             )
         )
+    return candidates, entries, paragraphs
+
+
+def search_layered(
+    session: Session,
+    query: str,
+    *,
+    build_id: str,
+    embedding_provider: EmbeddingProvider,
+    reranker: Reranker,
+    top_k: int = 5,
+    parent_candidate_k: int = 5,
+    child_candidate_k: int = 20,
+    candidate_limit: int = 128,
+    rrf_k: int = 60,
+    neighbor_window: int = 1,
+    layer_mode: LayeredRetrievalMode | str = LayeredRetrievalMode.PARENT_CHILD,
+) -> list[RetrievalCandidate]:
+    if top_k <= 0:
+        raise ValueError("top_k 必须大于 0")
+    candidates, entries, paragraphs = _retrieve_layered_candidates(
+        session,
+        query,
+        build_id=build_id,
+        embedding_provider=embedding_provider,
+        parent_candidate_k=parent_candidate_k,
+        child_candidate_k=child_candidate_k,
+        candidate_limit=candidate_limit,
+        rrf_k=rrf_k,
+        layer_mode=layer_mode,
+    )
     reranked = rerank_candidates(query, candidates, reranker, top_k)
     return _expand_layered_neighbors(reranked, entries, paragraphs, neighbor_window)
 
 
-def search(
+def search_layered_with_query_variants(
+    session: Session,
+    original_query: str,
+    query_variants: list[QueryVariant],
+    *,
+    build_id: str,
+    embedding_provider: EmbeddingProvider,
+    reranker: Reranker,
+    top_k: int = 5,
+    parent_candidate_k: int = 5,
+    child_candidate_k: int = 20,
+    candidate_limit: int = 128,
+    rrf_k: int = 60,
+    neighbor_window: int = 1,
+    layer_mode: LayeredRetrievalMode | str = LayeredRetrievalMode.PARENT_CHILD,
+    query_fusion_rrf_k: int = 60,
+    query_candidate_limit: int = 128,
+) -> list[RetrievalCandidate]:
+    if not query_variants or query_variants[0].kind != "original":
+        raise ValueError("多查询检索必须以原问题作为首个变体")
+    retrievals: list[tuple[QueryVariant, list[RetrievalCandidate]]] = []
+    entries: list[ChildManifestEntry] | None = None
+    paragraphs: dict[tuple[str, int], str] | None = None
+    for variant in query_variants:
+        candidates, current_entries, current_paragraphs = _retrieve_layered_candidates(
+            session,
+            variant.text,
+            build_id=build_id,
+            embedding_provider=embedding_provider,
+            parent_candidate_k=parent_candidate_k,
+            child_candidate_k=child_candidate_k,
+            candidate_limit=candidate_limit,
+            rrf_k=rrf_k,
+            layer_mode=layer_mode,
+        )
+        retrievals.append((variant, candidates))
+        entries = current_entries
+        paragraphs = current_paragraphs
+    fused = weighted_query_fusion(
+        retrievals,
+        rrf_k=query_fusion_rrf_k,
+        candidate_limit=query_candidate_limit,
+    )
+    reranked = rerank_candidates(
+        augmented_rerank_query(original_query, query_variants),
+        fused,
+        reranker,
+        top_k,
+    )
+    if entries is None or paragraphs is None:
+        raise RuntimeError("分层多查询检索没有生成候选上下文")
+    return _expand_layered_neighbors(reranked, entries, paragraphs, neighbor_window)
+
+
+def _retrieve_candidates(
     session: Session,
     query: str,
-    top_k: int = 5,
+    candidate_k: int,
     build_id: str | None = None,
     *,
     mode: RetrievalMode | str = RetrievalMode.BM25,
@@ -1312,11 +1413,11 @@ def search(
     bm25_candidate_k: int = 5,
     dense_candidate_k: int = 5,
     rrf_k: int = 60,
-    reranker: Reranker | None = None,
-    rerank_candidate_k: int = 20,
 ) -> list[RetrievalCandidate]:
     if not query.strip():
         raise ValueError("查询不能为空")
+    if candidate_k <= 0:
+        raise ValueError("candidate_k 必须大于 0")
     if build_id is None:
         build = session.scalar(
             select(IndexBuildRow).where(
@@ -1337,13 +1438,8 @@ def search(
     if not build_path.is_dir():
         raise FileNotFoundError(f"活动索引目录不存在：{build_path}")
     selected_mode = RetrievalMode(mode)
-    if reranker is not None and selected_mode != RetrievalMode.HYBRID:
-        raise ValueError("Reranker 第一版只支持 hybrid 检索模式")
-    if rerank_candidate_k <= 0:
-        raise ValueError("rerank_candidate_k 必须大于 0")
-    candidate_floor = max(top_k, rerank_candidate_k) if reranker is not None else top_k
     bm25_hits = (
-        _bm25_search(build_path, query, max(candidate_floor, bm25_candidate_k))
+        _bm25_search(build_path, query, max(candidate_k, bm25_candidate_k))
         if selected_mode in {RetrievalMode.BM25, RetrievalMode.HYBRID}
         else []
     )
@@ -1353,7 +1449,7 @@ def search(
         dense_hits = _dense_search(
             build_path,
             query,
-            max(candidate_floor, dense_candidate_k),
+            max(candidate_k, dense_candidate_k),
             embedding_provider,
         )
     else:
@@ -1365,7 +1461,7 @@ def search(
     else:
         fused = reciprocal_rank_fusion(bm25_hits, dense_hits, rrf_k)
     candidates: list[RetrievalCandidate] = []
-    for rrf_rank, hit in enumerate(fused[:candidate_floor], start=1):
+    for rrf_rank, hit in enumerate(fused[:candidate_k], start=1):
         chunk = session.get(TopicChunkRow, hit.chunk_id)
         if chunk is None:
             raise RuntimeError(f"索引引用了不存在的话题块：{hit.chunk_id}")
@@ -1399,6 +1495,92 @@ def search(
                 context_summary=chunk.context_summary,
             )
         )
+    return candidates
+
+
+def search(
+    session: Session,
+    query: str,
+    top_k: int = 5,
+    build_id: str | None = None,
+    *,
+    mode: RetrievalMode | str = RetrievalMode.BM25,
+    embedding_provider: EmbeddingProvider | None = None,
+    bm25_candidate_k: int = 5,
+    dense_candidate_k: int = 5,
+    rrf_k: int = 60,
+    reranker: Reranker | None = None,
+    rerank_candidate_k: int = 20,
+) -> list[RetrievalCandidate]:
+    selected_mode = RetrievalMode(mode)
+    if reranker is not None and selected_mode != RetrievalMode.HYBRID:
+        raise ValueError("Reranker 第一版只支持 hybrid 检索模式")
+    if rerank_candidate_k <= 0:
+        raise ValueError("rerank_candidate_k 必须大于 0")
+    candidate_k = max(top_k, rerank_candidate_k) if reranker is not None else top_k
+    candidates = _retrieve_candidates(
+        session,
+        query,
+        candidate_k,
+        build_id,
+        mode=selected_mode,
+        embedding_provider=embedding_provider,
+        bm25_candidate_k=bm25_candidate_k,
+        dense_candidate_k=dense_candidate_k,
+        rrf_k=rrf_k,
+    )
     if reranker is not None:
         return rerank_candidates(query, candidates, reranker, top_k)
     return candidates[:top_k]
+
+
+def search_with_query_variants(
+    session: Session,
+    original_query: str,
+    query_variants: list[QueryVariant],
+    *,
+    top_k: int = 5,
+    build_id: str | None = None,
+    mode: RetrievalMode | str = RetrievalMode.HYBRID,
+    embedding_provider: EmbeddingProvider,
+    bm25_candidate_k: int = 5,
+    dense_candidate_k: int = 5,
+    rrf_k: int = 60,
+    reranker: Reranker,
+    rerank_candidate_k: int = 20,
+    query_fusion_rrf_k: int = 60,
+    query_candidate_limit: int = 128,
+) -> list[RetrievalCandidate]:
+    if RetrievalMode(mode) != RetrievalMode.HYBRID:
+        raise ValueError("查询改写第一版只支持 hybrid 检索模式")
+    if not query_variants or query_variants[0].kind != "original":
+        raise ValueError("多查询检索必须以原问题作为首个变体")
+    candidate_k = max(top_k, rerank_candidate_k)
+    retrievals = [
+        (
+            variant,
+            _retrieve_candidates(
+                session,
+                variant.text,
+                candidate_k,
+                build_id,
+                mode=mode,
+                embedding_provider=embedding_provider,
+                bm25_candidate_k=bm25_candidate_k,
+                dense_candidate_k=dense_candidate_k,
+                rrf_k=rrf_k,
+            ),
+        )
+        for variant in query_variants
+    ]
+    fused = weighted_query_fusion(
+        retrievals,
+        rrf_k=query_fusion_rrf_k,
+        candidate_limit=query_candidate_limit,
+    )
+    return rerank_candidates(
+        augmented_rerank_query(original_query, query_variants),
+        fused,
+        reranker,
+        top_k,
+    )

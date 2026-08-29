@@ -75,14 +75,17 @@ uv run xifeng search "要检索的问题" --top-k 5
 uv run xifeng search "要检索的问题" --mode bm25 --top-k 5
 uv run xifeng search "要检索的问题" --mode dense --top-k 5
 uv run xifeng search "要检索的问题" --mode hybrid --rerank --top-k 5
+uv run xifeng search "要检索的问题" --mode hybrid --rerank --rewrite --top-k 5
 uv run xifeng search "要检索的问题" --mode hybrid --rerank --assemble
 uv run xifeng search "要检索的问题" --mode hybrid --rerank --layered --build <BUILD_ID>
 uv run xifeng generator models
 uv run xifeng ask "要研究的问题" --mode hybrid --rerank
+uv run xifeng ask "要研究的问题" --mode hybrid --rerank --rewrite
 uv run xifeng ask "要研究的问题" --mode hybrid --rerank --supplement on
 uv run xifeng eval curate
 uv run xifeng eval run <FROZEN_DATASET_ID> --mode hybrid --k 5
 uv run xifeng eval run <FROZEN_DATASET_ID> --mode hybrid --rerank --rerank-candidate-k 20 --k 5
+uv run xifeng eval run <FROZEN_DATASET_ID> --mode hybrid --rerank --rewrite --k 5
 ```
 
 首次导入前，`corpus scan` 会显示解析后的绝对语料路径和发现的文章数。清洗存在
@@ -140,6 +143,13 @@ Index Build 上运行。旧的 JSON 文件评测入口暂时兼容保留。
 默认候选深度为 5，这是当前 6 题 pilot 上不损失证据覆盖且能改善 MRR/nDCG 的保守选择。
 可用 `--rerank-candidate-k` 在单次搜索或评测中覆盖候选深度，便于在正式 dev benchmark
 扩充后重新运行 5/10/20/30 对照。
+
+`--rewrite` 在 Hybrid + Reranker 路径上显式启用本地保守查询改写，默认不会运行。改写器只看
+当前问题，不读取语料或首轮候选；原问题权重为 1.0，默认一条改写共享总权重 0.7。各查询先按
+当前 TopicChunk 或分层 Profile 独立召回，再以加权 RRF 融合，最终把原问题作为主要约束、
+等价改写作为辅助理解统一重排一次。
+Ollama 不可用或输出无效时会提示并退回原问题，不自动外发或中断检索。provider、改写数量、
+融合权重和候选上限可在 `query_rewrite` 配置段调整。
 
 `search --assemble` 在本地把排序候选转换为带 `E1`、`E2` 等查询内引用 ID 的规范 JSON
 证据上下文，不调用 Generator，也不产生外部请求。默认最多选择 5 个完整 TopicChunk、总渲染

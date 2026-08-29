@@ -141,6 +141,19 @@ class RetrievalScores(BaseModel):
     reranker: float | None = None
     reranker_rank: int | None = Field(default=None, ge=1)
     reranker_truncated: bool | None = None
+    query_fusion: float | None = None
+    query_fusion_rank: int | None = Field(default=None, ge=1)
+
+
+class QueryMatch(BaseModel):
+    query_index: int = Field(ge=0)
+    query_kind: str = Field(pattern=r"^(original|rewrite)$")
+    query_text: str = Field(min_length=1)
+    rank: int = Field(ge=1)
+    weight: float = Field(gt=0)
+    retrieval_scores: RetrievalScores
+    source: list[str] = Field(default_factory=list)
+    layer_sources: list[str] = Field(default_factory=list)
 
 
 class RetrievalCandidate(BaseModel):
@@ -163,6 +176,7 @@ class RetrievalCandidate(BaseModel):
     parent_retrieval_scores: RetrievalScores | None = None
     child_retrieval_scores: RetrievalScores | None = None
     candidate_rank: int | None = Field(default=None, ge=1)
+    query_matches: list[QueryMatch] = Field(default_factory=list)
     matched_original_text: str | None = Field(default=None, exclude=True)
     matched_bounding_range: tuple[int, int] | None = Field(default=None, exclude=True)
     neighbor_trimmed: bool = False

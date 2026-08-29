@@ -45,6 +45,15 @@ class RetrievalSettings(BaseModel):
     rrf_k: int = Field(default=60, gt=0)
 
 
+class QueryRewriteSettings(BaseModel):
+    provider: str = "ollama"
+    max_variants: int = Field(default=1, ge=0, le=3)
+    original_weight: float = Field(default=1.0, gt=0)
+    rewrite_total_weight: float = Field(default=0.7, gt=0)
+    fusion_rrf_k: int = Field(default=60, gt=0)
+    candidate_limit: int = Field(default=128, gt=0, le=5000)
+
+
 class LayeredRetrievalSettings(BaseModel):
     splitter_version: str = Field(default="atomic-greedy-v1", min_length=1)
     target_chars: int = Field(default=400, gt=0)
@@ -134,6 +143,7 @@ class Settings(BaseSettings):
     storage: StorageSettings = Field(default_factory=StorageSettings)
     embedding: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
     retrieval: RetrievalSettings = Field(default_factory=RetrievalSettings)
+    query_rewrite: QueryRewriteSettings = Field(default_factory=QueryRewriteSettings)
     layered: LayeredRetrievalSettings = Field(default_factory=LayeredRetrievalSettings)
     reranker: RerankerSettings = Field(default_factory=RerankerSettings)
     context_assembly: ContextAssemblySettings = Field(default_factory=ContextAssemblySettings)

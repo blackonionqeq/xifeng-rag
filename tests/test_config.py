@@ -120,6 +120,11 @@ def test_embedding_cache_path_and_retrieval_defaults(tmp_path: Path) -> None:
     assert settings.retrieval.bm25_candidate_k == 5
     assert settings.retrieval.dense_candidate_k == 5
     assert settings.retrieval.rrf_k == 60
+    assert settings.query_rewrite.provider == "ollama"
+    assert settings.query_rewrite.max_variants == 1
+    assert settings.query_rewrite.original_weight == 1.0
+    assert settings.query_rewrite.rewrite_total_weight == 0.7
+    assert settings.query_rewrite.candidate_limit == 128
     assert settings.layered.target_chars == 400
     assert settings.layered.max_chars == 600
     assert settings.layered.parent_candidate_k == 5
@@ -145,6 +150,13 @@ def test_layered_chunk_sizes_are_validated(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="target_chars"):
+        load_settings(config)
+
+
+def test_query_rewrite_variant_count_is_bounded(tmp_path: Path) -> None:
+    config = tmp_path / "settings.yaml"
+    config.write_text("query_rewrite:\n  max_variants: 4\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="max_variants"):
         load_settings(config)
 
 

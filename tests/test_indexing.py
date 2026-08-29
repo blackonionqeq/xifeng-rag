@@ -20,7 +20,10 @@ from xifeng_rag.indexing import (
     record_build_failure,
     search,
     search_layered,
+    search_layered_with_query_variants,
+    search_with_query_variants,
 )
+from xifeng_rag.query_rewrite import build_query_variants
 from xifeng_rag.reranking import RerankScore
 from xifeng_rag.storage import ArticleVersionRow, Database, IndexBuildRow
 
@@ -218,6 +221,58 @@ def test_hybrid_search_can_rerank_wide_candidates(database: Database, tmp_path: 
     assert reranked[0].retrieval_scores.rrf_rank == 2
 
 
+def test_query_variants_fuse_before_one_augmented_query_rerank(
+    database: Database, tmp_path: Path
+) -> None:
+    _approve_fixture(database, tmp_path)
+    provider = FakeEmbeddingProvider()
+
+    class RecordingReranker:
+        def __init__(self) -> None:
+            self.queries: list[str] = []
+
+        @property
+        def metadata(self) -> dict[str, object]:
+            return {"provider": "fake"}
+
+        def rerank(self, query, candidates):
+            self.queries.append(query)
+            return [
+                RerankScore(float(len(candidates) - index), False)
+                for index in range(len(candidates))
+            ]
+
+        def close(self) -> None:
+            pass
+
+    variants = build_query_variants(
+        "水果苹果",
+        ["苹果怎样种植"],
+        original_weight=1.0,
+        rewrite_total_weight=0.7,
+    )
+    reranker = RecordingReranker()
+    with database.session() as session:
+        outcome = build_hybrid_index(session, tmp_path / "multi-query-indexes", provider)
+        results = search_with_query_variants(
+            session,
+            "水果苹果",
+            variants,
+            build_id=outcome.build_id,
+            embedding_provider=provider,
+            reranker=reranker,
+            top_k=2,
+            rerank_candidate_k=2,
+        )
+
+    assert len(reranker.queries) == 1
+    assert reranker.queries[0].startswith("原问题（主要语义约束）：水果苹果")
+    assert "苹果怎样种植" in reranker.queries[0]
+    assert results
+    assert results[0].query_matches
+    assert results[0].retrieval_scores.query_fusion_rank is not None
+
+
 def test_layered_build_stays_opt_in_and_search_expands_within_parent(
     database: Database, tmp_path: Path
 ) -> None:
@@ -286,6 +341,25 @@ def test_layered_build_stays_opt_in_and_search_expands_within_parent(
             neighbor_window=0,
             layer_mode="child",
         )
+        rewritten = search_layered_with_query_variants(
+            session,
+            "红苹果",
+            build_query_variants(
+                "红苹果",
+                ["成熟的红色苹果"],
+                original_weight=1.0,
+                rewrite_total_weight=0.7,
+            ),
+            build_id=layered.build_id,
+            embedding_provider=provider,
+            reranker=AppleReranker(),
+            top_k=1,
+            parent_candidate_k=1,
+            child_candidate_k=4,
+            candidate_limit=10,
+            query_candidate_limit=10,
+            neighbor_window=0,
+        )
         without_neighbors = search_layered(
             session,
             "红苹果",
@@ -332,6 +406,11 @@ def test_layered_build_stays_opt_in_and_search_expands_within_parent(
     assert results[0].layer_sources
     assert child_only[0].layer_sources == ["child"]
     assert child_only[0].expanded_range == child_only[0].matched_ranges[0]
+    assert rewritten[0].query_matches
+    assert {item.query_kind for item in rewritten[0].query_matches} == {
+        "original",
+        "rewrite",
+    }
     assert sorted(
         ranked for item in without_neighbors for ranked in item.matched_child_ranks
     ) == sorted(ranked for item in with_neighbors for ranked in item.matched_child_ranks)

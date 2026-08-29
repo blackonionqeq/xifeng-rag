@@ -14,8 +14,19 @@ from sqlalchemy.orm import Session
 
 from xifeng_rag.corpus import stable_id
 from xifeng_rag.domain import LayeredRetrievalMode, RetrievalMode
-from xifeng_rag.indexing import EmbeddingProvider, search, search_layered
+from xifeng_rag.indexing import (
+    EmbeddingProvider,
+    search,
+    search_layered,
+    search_layered_with_query_variants,
+    search_with_query_variants,
+)
 from xifeng_rag.layered_retrieval import read_child_manifest
+from xifeng_rag.query_rewrite import (
+    QueryRewriter,
+    QueryRewriteStatus,
+    build_query_variants,
+)
 from xifeng_rag.reranking import Reranker
 from xifeng_rag.storage import (
     EvaluationDatasetRow,
@@ -136,6 +147,12 @@ def run_frozen_evaluation(
     layered_candidate_limit: int = 128,
     layered_neighbor_window: int = 1,
     layered_mode: LayeredRetrievalMode | str = LayeredRetrievalMode.PARENT_CHILD,
+    query_rewriter: QueryRewriter | None = None,
+    rewrite_max_variants: int = 1,
+    rewrite_original_weight: float = 1.0,
+    rewrite_total_weight: float = 0.7,
+    rewrite_fusion_rrf_k: int = 60,
+    rewrite_candidate_limit: int = 128,
 ) -> dict[str, object]:
     if k <= 0:
         raise ValueError("k 必须大于 0")
@@ -167,6 +184,12 @@ def run_frozen_evaluation(
     )
     if layered and (embedding_provider is None or reranker is None or build_id is None):
         raise ValueError("分层评测需要显式 Build、Embedding Provider 和 Reranker")
+    if query_rewriter is not None and (
+        RetrievalMode(mode) != RetrievalMode.HYBRID
+        or embedding_provider is None
+        or reranker is None
+    ):
+        raise ValueError("查询改写评测需要 Hybrid、Embedding Provider 和 Reranker")
     details: list[dict[str, object]] = []
     for question in questions:
         evidence = list(
@@ -197,7 +220,41 @@ def run_frozen_evaluation(
             )
         }
         started = time.perf_counter()
-        if layered:
+        rewrite_result = (
+            query_rewriter.rewrite(question.query, rewrite_max_variants)
+            if query_rewriter is not None
+            else None
+        )
+        query_variants = (
+            build_query_variants(
+                question.query,
+                rewrite_result.variants,
+                original_weight=rewrite_original_weight,
+                rewrite_total_weight=rewrite_total_weight,
+            )
+            if rewrite_result is not None and rewrite_result.variants
+            else None
+        )
+        if layered and query_variants is not None:
+            assert embedding_provider is not None and reranker is not None
+            candidates = search_layered_with_query_variants(
+                session,
+                question.query,
+                query_variants,
+                build_id=build.id,
+                embedding_provider=embedding_provider,
+                reranker=reranker,
+                top_k=k,
+                parent_candidate_k=layered_parent_candidate_k,
+                child_candidate_k=layered_child_candidate_k,
+                candidate_limit=layered_candidate_limit,
+                rrf_k=rrf_k,
+                neighbor_window=layered_neighbor_window,
+                layer_mode=layered_mode,
+                query_fusion_rrf_k=rewrite_fusion_rrf_k,
+                query_candidate_limit=rewrite_candidate_limit,
+            )
+        elif layered:
             assert embedding_provider is not None and reranker is not None
             candidates = search_layered(
                 session,
@@ -212,6 +269,24 @@ def run_frozen_evaluation(
                 rrf_k=rrf_k,
                 neighbor_window=layered_neighbor_window,
                 layer_mode=layered_mode,
+            )
+        elif query_variants is not None:
+            assert embedding_provider is not None and reranker is not None
+            candidates = search_with_query_variants(
+                session,
+                question.query,
+                query_variants,
+                top_k=k,
+                build_id=build.id,
+                mode=mode,
+                embedding_provider=embedding_provider,
+                bm25_candidate_k=bm25_candidate_k,
+                dense_candidate_k=dense_candidate_k,
+                rrf_k=rrf_k,
+                reranker=reranker,
+                rerank_candidate_k=rerank_candidate_k,
+                query_fusion_rrf_k=rewrite_fusion_rrf_k,
+                query_candidate_limit=rewrite_candidate_limit,
             )
         else:
             candidates = search(
@@ -294,6 +369,9 @@ def run_frozen_evaluation(
                         "matched_child_ranks": item.matched_child_ranks,
                         "matched_ranges": item.matched_ranges,
                         "expanded_range": item.expanded_range,
+                        "query_matches": [
+                            match.model_dump(mode="json") for match in item.query_matches
+                        ],
                     }
                     for item in candidates
                 ],
@@ -314,6 +392,11 @@ def run_frozen_evaluation(
                 "should_abstain": not question.answerable,
                 "retrieval_mode": str(RetrievalMode(mode)),
                 "layered": layered,
+                "query_rewrite": (
+                    rewrite_result.model_dump(mode="json")
+                    if rewrite_result is not None
+                    else None
+                ),
                 "layered_config": (
                     {
                         "parent_candidate_k": layered_parent_candidate_k,
@@ -347,6 +430,17 @@ def run_frozen_evaluation(
     metrics["latency_p95_ms"] = sorted(latencies)[
         max(0, math.ceil(len(latencies) * 0.95) - 1)
     ]
+    rewrite_details: list[dict[str, object]] = []
+    for item in details:
+        rewrite_detail = item.get("query_rewrite")
+        if isinstance(rewrite_detail, dict):
+            rewrite_details.append(rewrite_detail)
+    if rewrite_details:
+        rewrite_latencies = [float(str(item["latency_ms"])) for item in rewrite_details]
+        metrics["rewrite_latency_mean_ms"] = statistics.fmean(rewrite_latencies)
+        metrics["rewrite_failure_rate"] = sum(
+            item["status"] == QueryRewriteStatus.FAILED.value for item in rewrite_details
+        ) / len(rewrite_details)
     run_id = stable_id("eval", dataset.id, build.id, str(time.time_ns()), length=32)
     code_commit, worktree_dirty = _git_state()
     reranker_metadata = dict(reranker.metadata) if reranker is not None else {}
@@ -400,6 +494,18 @@ def run_frozen_evaluation(
         "dataset_id": dataset.id,
         "retrieval_mode": str(RetrievalMode(mode)),
         "reranker": reranker_metadata if reranker is not None else None,
+        "query_rewrite": (
+            {
+                "provider": rewrite_details[0]["provider"],
+                "max_variants": rewrite_max_variants,
+                "original_weight": rewrite_original_weight,
+                "rewrite_total_weight": rewrite_total_weight,
+                "fusion_rrf_k": rewrite_fusion_rrf_k,
+                "candidate_limit": rewrite_candidate_limit,
+            }
+            if rewrite_details
+            else None
+        ),
         "layered": (
             {
                 "parent_candidate_k": layered_parent_candidate_k,
