@@ -41,7 +41,7 @@ TopicChunk，并额外报告 evidence coverage@K。
 5. DeepSeek Generator 的提示词、忠实度、完整性和延迟分析；
 6. AI 话题长块、固定长度小块和父子分块对比。
 
-第一阶段的本地模型只负责离线语义分块和概括。后续再研究更完整的 Contextual Retrieval，以及本地/外部 Generator 对比。查询改写、HyDE、RAPTOR、上下文压缩、Self-RAG 等方法先列为候选，不在第一阶段同时实现。
+第一阶段的本地模型只负责离线语义分块和概括。后续再研究更完整的 Contextual Retrieval，以及本地/外部 Generator 对比。HyDE、RAPTOR、上下文压缩、Self-RAG 等方法先列为候选，不在第一阶段同时实现。检索基线完成后，保守查询改写作为显式启用的独立实验推进，详见[查询改写设计](../specs/2026-08-29-conservative-query-rewrite-design.md)。
 
 ### V2：图增强 RAG
 

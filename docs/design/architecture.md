@@ -50,7 +50,7 @@ saved_articles/*.md
   -> 带原文引用的回答
 ```
 
-V0 先以已批准的 AI 话题块完成 BM25、引用和基础评测。V1 再加入 Dense、RRF、本地 Reranker 与 Generator；不提前抽象查询改写、HyDE、RAPTOR、压缩与路由等所有可能策略。
+V0 先以已批准的 AI 话题块完成 BM25、引用和基础评测。V1 再加入 Dense、RRF、本地 Reranker 与 Generator；不提前抽象 HyDE、RAPTOR、压缩与路由等所有可能策略。已确认的保守查询改写实验使用普通、显式的 `QueryRewriter` 接口，详见[查询改写设计](../specs/2026-08-29-conservative-query-rewrite-design.md)。
 
 ## 4. 必要扩展边界
 

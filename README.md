@@ -175,6 +175,7 @@ DeepSeek 模型 ID 可能随账号与服务版本变化。先运行 `generator m
 - [确定性上下文组装设计](docs/specs/2026-08-28-deterministic-context-assembly-design.md)
 - [DeepSeek Generator 设计](docs/specs/2026-08-28-deepseek-generator-design.md)
 - [分层子块检索与相邻上下文设计](docs/specs/2026-08-29-layered-child-retrieval-design.md)
+- [保守查询改写与多查询融合设计](docs/specs/2026-08-29-conservative-query-rewrite-design.md)
 - [评测问题编写与 AI 草案审核指南](docs/guides/evaluation-question-writing.md)
 - [Agent 工作约束](AGENTS.md)
 
