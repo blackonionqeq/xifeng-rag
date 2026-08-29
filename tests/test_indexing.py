@@ -15,9 +15,11 @@ from xifeng_rag.indexing import (
     RankedHit,
     build_hybrid_index,
     build_index,
+    build_layered_index,
     reciprocal_rank_fusion,
     record_build_failure,
     search,
+    search_layered,
 )
 from xifeng_rag.reranking import RerankScore
 from xifeng_rag.storage import ArticleVersionRow, Database, IndexBuildRow
@@ -214,6 +216,220 @@ def test_hybrid_search_can_rerank_wide_candidates(database: Database, tmp_path: 
     assert reranked[0].chunk_id != baseline[0].chunk_id
     assert reranked[0].retrieval_scores.reranker_rank == 1
     assert reranked[0].retrieval_scores.rrf_rank == 2
+
+
+def test_layered_build_stays_opt_in_and_search_expands_within_parent(
+    database: Database, tmp_path: Path
+) -> None:
+    _approve_fixture(database, tmp_path)
+    provider = FakeEmbeddingProvider()
+
+    class AppleReranker:
+        @property
+        def metadata(self) -> dict[str, object]:
+            return {"provider": "fake"}
+
+        def rerank(self, query, candidates):
+            del query
+            return [
+                RerankScore(10.0 if "红苹果" in item.original_text else 0.0, False)
+                for item in candidates
+            ]
+
+        def close(self) -> None:
+            pass
+
+    with database.session() as session:
+        baseline = build_hybrid_index(session, tmp_path / "layered-indexes", provider)
+        layered = build_layered_index(
+            session,
+            tmp_path / "layered-indexes",
+            provider,
+            target_chars=1,
+            max_chars=100,
+            tail_merge_chars=0,
+            parent_candidate_k=1,
+            child_candidate_k=4,
+            candidate_limit=10,
+        )
+        active = session.scalar(select(IndexBuildRow).where(IndexBuildRow.active.is_(True)))
+        assert active is not None and active.id == baseline.build_id
+        layered_row = session.get(IndexBuildRow, layered.build_id)
+        assert layered_row is not None and layered_row.status == "ready"
+        assert (layered.path / "parent" / "bm25").is_dir()
+        assert (layered.path / "child" / "qdrant").is_dir()
+        manifest_text = (layered.path / "children.json").read_text(encoding="utf-8")
+        assert "original_text" not in manifest_text
+
+        results = search_layered(
+            session,
+            "红苹果",
+            build_id=layered.build_id,
+            embedding_provider=provider,
+            reranker=AppleReranker(),
+            top_k=1,
+            parent_candidate_k=1,
+            child_candidate_k=4,
+            candidate_limit=10,
+            neighbor_window=1,
+        )
+        child_only = search_layered(
+            session,
+            "红苹果",
+            build_id=layered.build_id,
+            embedding_provider=provider,
+            reranker=AppleReranker(),
+            top_k=1,
+            parent_candidate_k=1,
+            child_candidate_k=4,
+            candidate_limit=10,
+            neighbor_window=0,
+            layer_mode="child",
+        )
+        without_neighbors = search_layered(
+            session,
+            "红苹果",
+            build_id=layered.build_id,
+            embedding_provider=provider,
+            reranker=AppleReranker(),
+            top_k=4,
+            parent_candidate_k=1,
+            child_candidate_k=4,
+            candidate_limit=10,
+            neighbor_window=0,
+        )
+        with_neighbors = search_layered(
+            session,
+            "红苹果",
+            build_id=layered.build_id,
+            embedding_provider=provider,
+            reranker=AppleReranker(),
+            top_k=4,
+            parent_candidate_k=1,
+            child_candidate_k=4,
+            candidate_limit=10,
+            neighbor_window=1,
+        )
+        with pytest.raises(ValueError, match="Index Profile 不一致"):
+            search_layered(
+                session,
+                "红苹果",
+                build_id=layered.build_id,
+                embedding_provider=provider,
+                reranker=AppleReranker(),
+                top_k=1,
+                parent_candidate_k=2,
+                child_candidate_k=4,
+                candidate_limit=10,
+            )
+
+    assert len(results) == 1
+    assert results[0].parent_chunk_id is not None
+    assert results[0].matched_ranges == [(3, 3)]
+    assert results[0].expanded_range == (3, 4)
+    assert results[0].paragraph_range == (3, 4)
+    assert "红苹果成熟丰收" in results[0].original_text
+    assert results[0].layer_sources
+    assert child_only[0].layer_sources == ["child"]
+    assert child_only[0].expanded_range == child_only[0].matched_ranges[0]
+    assert sorted(
+        ranked for item in without_neighbors for ranked in item.matched_child_ranks
+    ) == sorted(ranked for item in with_neighbors for ranked in item.matched_child_ranks)
+
+
+def test_layered_build_reuses_unchanged_parent_and_child_embeddings(
+    database: Database, tmp_path: Path
+) -> None:
+    _approve_fixture(database, tmp_path)
+
+    class CountingProvider(FakeEmbeddingProvider):
+        def __init__(self) -> None:
+            self.encoded_batches: list[list[str]] = []
+
+        def encode_documents(self, texts: list[str]) -> np.ndarray:
+            self.encoded_batches.append(list(texts))
+            return super().encode_documents(texts)
+
+    provider = CountingProvider()
+    with database.session() as session:
+        build_layered_index(
+            session,
+            tmp_path / "incremental-indexes",
+            provider,
+            target_chars=1,
+            max_chars=100,
+            tail_merge_chars=0,
+            parent_candidate_k=1,
+            child_candidate_k=4,
+            candidate_limit=20,
+        )
+    provider.encoded_batches.clear()
+
+    corpus = tmp_path / "corpus"
+    (corpus / "second.md").write_text(
+        "# 第二篇\n\n果园种植苹果。\n\n红苹果成熟丰收。\n\n火箭发射卫星。",
+        encoding="utf-8",
+    )
+    with database.session() as session:
+        scan_corpus(session, corpus)
+        version = session.scalar(
+            select(ArticleVersionRow).where(ArticleVersionRow.status == "pending_chunking")
+        )
+        assert version is not None
+        propose_chunks(session, version, TwoTopicGenerator(), "fake", 0)
+        version_id = version.id
+    with database.session() as session:
+        review, _ = export_review(session, version_id, tmp_path / "second-reviews")
+        approve_manifest(session, review)
+        outcome = build_layered_index(
+            session,
+            tmp_path / "incremental-indexes",
+            provider,
+            target_chars=1,
+            max_chars=100,
+            tail_merge_chars=0,
+            parent_candidate_k=1,
+            child_candidate_k=4,
+            candidate_limit=20,
+        )
+        metadata = json.loads((outcome.path / "metadata.json").read_text(encoding="utf-8"))
+
+    assert metadata["reused_parent_embedding_count"] == 2
+    assert metadata["reused_child_embedding_count"] == 4
+    assert sum(len(batch) for batch in provider.encoded_batches) == 6
+
+
+def test_failed_layered_child_index_keeps_default_build_active(
+    database: Database, tmp_path: Path
+) -> None:
+    _approve_fixture(database, tmp_path)
+    with database.session() as session:
+        baseline = build_hybrid_index(
+            session, tmp_path / "layered-rollback", FakeEmbeddingProvider()
+        )
+
+    class FailSecondLayerProvider(FakeEmbeddingProvider):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def encode_documents(self, texts: list[str]) -> np.ndarray:
+            self.calls += 1
+            if self.calls == 2:
+                raise RuntimeError("synthetic child embedding failure")
+            return super().encode_documents(texts)
+
+    with pytest.raises(IndexBuildError) as raised, database.session() as session:
+        build_layered_index(
+            session,
+            tmp_path / "layered-rollback",
+            FailSecondLayerProvider(),
+            candidate_limit=30,
+        )
+
+    assert not raised.value.final_path.exists()
+    with database.session() as session:
+        active = session.scalar(select(IndexBuildRow).where(IndexBuildRow.active.is_(True)))
+        assert active is not None and active.id == baseline.build_id
 
 
 def test_reranker_rejects_single_retrieval_modes(database: Database, tmp_path: Path) -> None:

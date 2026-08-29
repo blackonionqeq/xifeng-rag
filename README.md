@@ -17,6 +17,7 @@ DeepSeek 结构化回答、稳定原文引用和基础检索评测。正式前�
 - 单篇分块重试，可切换本地或显式确认的外部模型并使用一次性自定义 Prompt；
 - 已批准话题块上的中文 BM25、BGE Dense、RRF 混合检索和原文引用；
 - 使用 `BAAI/bge-reranker-v2-m3` 对 Hybrid 宽候选进行显式本地重排；
+- 可手动构建父块 + 确定性子块实验索引，并在子块重排后串连同父块相邻上下文；
 - 将排序候选按数量与字符预算组装为带稳定来源的本地证据上下文；
 - 由用户显式触发 DeepSeek 单轮回答，支持结构化引用、部分回答、证据不足和模型补充分析；
 - 本地评测集工作台、Codex 辅助候选答案与人工证据范围审核；
@@ -69,11 +70,13 @@ uv run xifeng chunks review <ARTICLE_VERSION> --proposal <PROPOSAL_ID>
 # 阅读并按需修改 data/reviews/*.review.json
 uv run xifeng chunks approve data/reviews/<ARTICLE_VERSION>.review.json
 uv run xifeng index build
+uv run xifeng index build --profile layered
 uv run xifeng search "要检索的问题" --top-k 5
 uv run xifeng search "要检索的问题" --mode bm25 --top-k 5
 uv run xifeng search "要检索的问题" --mode dense --top-k 5
 uv run xifeng search "要检索的问题" --mode hybrid --rerank --top-k 5
 uv run xifeng search "要检索的问题" --mode hybrid --rerank --assemble
+uv run xifeng search "要检索的问题" --mode hybrid --rerank --layered --build <BUILD_ID>
 uv run xifeng generator models
 uv run xifeng ask "要研究的问题" --mode hybrid --rerank
 uv run xifeng ask "要研究的问题" --mode hybrid --rerank --supplement on
@@ -125,6 +128,11 @@ Index Build 上运行。旧的 JSON 文件评测入口暂时兼容保留。
 使用 Hybrid，旧 BM25 Build 自动使用 BM25。当前 34 块 pilot 语料的 Hybrid 默认让两路各召回 5 块，再以
 `rrf_k=60` 融合并返回请求的 Top-K。
 
+`index build --profile layered` 会额外生成父 TopicChunk 与约 400 字符确定性子块的两套 Hybrid
+索引，但不会替换当前活动索引。命令会输出 Build ID；查询时必须同时指定 `--layered`、
+`--build` 和 `--rerank`。父块与子块并行提名子块，统一重排后在同一父块内前后各扩一块。
+真实命中与扩展范围分别保存，评测不会把邻居偶然覆盖算作检索命中。
+
 本地重排必须通过 `--rerank` 显式开启，第一版只支持 Hybrid 模式。启用后 BM25 与 Dense
 都会至少召回 `reranker.candidate_k` 个候选，RRF 去重融合后由本地 Cross-Encoder 按
 `query + 文章标题 + original_text` 精排。默认 pair 总预算为 1024 tokens，超长候选的截断
@@ -166,6 +174,7 @@ DeepSeek 模型 ID 可能随账号与服务版本变化。先运行 `generator m
 - [评测集策展与 Codex 辅助设计](docs/specs/2026-08-27-evaluation-dataset-curation-design.md)
 - [确定性上下文组装设计](docs/specs/2026-08-28-deterministic-context-assembly-design.md)
 - [DeepSeek Generator 设计](docs/specs/2026-08-28-deepseek-generator-design.md)
+- [分层子块检索与相邻上下文设计](docs/specs/2026-08-29-layered-child-retrieval-design.md)
 - [评测问题编写与 AI 草案审核指南](docs/guides/evaluation-question-writing.md)
 - [Agent 工作约束](AGENTS.md)
 

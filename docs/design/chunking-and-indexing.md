@@ -219,7 +219,12 @@ B. 已批准话题块 + AI 上下文化 Dense + 原文 BM25
 C. B + 本地 Reranker
 ```
 
-后续再与固定长度小块、父子分块或 contextual BM25 对比。所有实验使用同一语料快照和评测问题；比较索引文本或 Embedding 时保持已批准边界不变，比较分块策略时保持 Embedding、索引文本构造、召回数量等其他变量不变。一次只改变一个主要变量。
+父子分块已作为手动实验 Profile 加入：保留已批准 TopicChunk 为父块，在父块内按原子单元
+确定性生成约 400 字符子块；父、子 Hybrid 并行召回后统一以子块重排，再在同父块内串连相邻
+子块。该实验不修改批准边界，真实命中与扩展范围分开评测。详细规则见
+[`docs/specs/2026-08-29-layered-child-retrieval-design.md`](../specs/2026-08-29-layered-child-retrieval-design.md)。
+
+后续再与固定长度小块或 contextual BM25 对比。所有实验使用同一语料快照和评测问题；比较索引文本或 Embedding 时保持已批准边界不变，比较分块策略时保持 Embedding、索引文本构造、召回数量等其他变量不变。一次只改变一个主要变量。
 
 ## 7. 稳定 ID
 

@@ -32,6 +32,7 @@ from xifeng_rag.evaluation_ui import (
     EvaluationCurationApplication,
     create_evaluation_server,
 )
+from xifeng_rag.layered_retrieval import ChildManifestEntry
 from xifeng_rag.storage import (
     ApprovedManifestRow,
     ArticleRow,
@@ -412,6 +413,75 @@ def test_frozen_evaluation_records_reranker_metadata(
         assert run.reranker_max_pair_tokens == 128
         assert run.reranker_truncated_candidate_count == 1
         assert "自造原文" not in run.details_json
+
+
+def test_layered_evaluation_does_not_credit_neighbor_as_retrieval_hit(
+    database: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset_id, question_id = _draft_question(database, tmp_path)
+    with database.session() as session:
+        save_reviewed_answer(session, question_id, _review_value())
+        freeze_dataset(session, dataset_id)
+
+    children = [
+        ChildManifestEntry(
+            id=f"child-{number}",
+            parent_chunk_id="chunk_eval_1" if number <= 2 else "chunk_eval_2",
+            article_id="article_eval_test",
+            article_version="version_eval_test",
+            start_paragraph=number,
+            end_paragraph=number,
+        )
+        for number in range(1, 5)
+    ]
+
+    def fake_layered_search(*args, **kwargs):
+        del args, kwargs
+        return [
+            RetrievalCandidate(
+                chunk_id="child-1",
+                parent_chunk_id="chunk_eval_1",
+                article_id="article_eval_test",
+                article_version="version_eval_test",
+                article_title="自造评测文章",
+                original_text="不写入运行详情的扩展原文",
+                paragraph_range=(1, 2),
+                matched_ranges=[(1, 1)],
+                matched_child_ids=["child-1"],
+                expanded_range=(1, 2),
+                retrieval_scores=RetrievalScores(reranker=1.0, reranker_rank=1),
+                source=["bm25", "dense"],
+                layer_sources=["child"],
+            )
+        ]
+
+    class FakeProvider:
+        pass
+
+    class FakeReranker:
+        @property
+        def metadata(self) -> dict[str, object]:
+            return {"provider": "fake"}
+
+    monkeypatch.setattr("xifeng_rag.evaluation.read_child_manifest", lambda path: children)
+    monkeypatch.setattr("xifeng_rag.evaluation.search_layered", fake_layered_search)
+    with database.session() as session:
+        outcome = run_frozen_evaluation(
+            session,
+            dataset_id,
+            k=1,
+            build_id="index_eval_test",
+            mode=RetrievalMode.HYBRID,
+            embedding_provider=FakeProvider(),  # type: ignore[arg-type]
+            reranker=FakeReranker(),  # type: ignore[arg-type]
+            layered=True,
+        )
+
+    metrics = outcome["metrics"]
+    assert isinstance(metrics, dict)
+    assert metrics["recall_at_k"] == 0.0
+    assert metrics["evidence_coverage_at_k"] == 0.0
+    assert metrics["expanded_evidence_coverage_at_k"] == 0.5
 
 
 def test_evaluation_http_requires_token_and_does_not_send_without_confirmation(

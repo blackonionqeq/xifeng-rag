@@ -31,7 +31,9 @@ from xifeng_rag.domain import (
     AssemblyStatus,
     BuildStatus,
     ContextAssemblyConfigSnapshot,
+    LayeredRetrievalMode,
     ProposalStatus,
+    RetrievalCandidate,
     RetrievalMode,
     VersionStatus,
 )
@@ -52,8 +54,10 @@ from xifeng_rag.indexing import (
     SentenceTransformersEmbeddingProvider,
     build_hybrid_index,
     build_index,
+    build_layered_index,
     record_build_failure,
     search,
+    search_layered,
 )
 from xifeng_rag.reranking import SentenceTransformersReranker
 from xifeng_rag.review_ui import IndexBuilder, run_review_server
@@ -148,7 +152,11 @@ def _resolved_retrieval_mode(
         )
     return (
         RetrievalMode.HYBRID
-        if build is not None and (Path(build.path) / "qdrant").is_dir()
+        if build is not None
+        and (
+            (Path(build.path) / "qdrant").is_dir()
+            or (Path(build.path) / "child" / "qdrant").is_dir()
+        )
         else RetrievalMode.BM25
     )
 
@@ -197,6 +205,53 @@ def _abort(exc: Exception) -> None:
 def _assembly_config(settings: Settings) -> ContextAssemblyConfigSnapshot:
     return ContextAssemblyConfigSnapshot.model_validate(
         settings.context_assembly.model_dump()
+    )
+
+
+def _search_with_profile(
+    session: Session,
+    runtime: Runtime,
+    query: str,
+    top_k: int,
+    *,
+    build: str | None,
+    selected_mode: RetrievalMode,
+    provider: SentenceTransformersEmbeddingProvider | None,
+    reranker: SentenceTransformersReranker | None,
+    rerank_candidate_k: int,
+    layered: bool,
+) -> list[RetrievalCandidate]:
+    if layered:
+        if build is None:
+            raise ValueError("--layered 必须同时用 --build 指定分层实验索引")
+        if selected_mode != RetrievalMode.HYBRID or provider is None or reranker is None:
+            raise ValueError("--layered 只支持显式启用的 Hybrid + Reranker")
+        settings = runtime.settings.layered
+        return search_layered(
+            session,
+            query,
+            build_id=build,
+            embedding_provider=provider,
+            reranker=reranker,
+            top_k=top_k,
+            parent_candidate_k=settings.parent_candidate_k,
+            child_candidate_k=settings.child_candidate_k,
+            candidate_limit=settings.candidate_limit,
+            rrf_k=runtime.settings.retrieval.rrf_k,
+            neighbor_window=settings.neighbor_window,
+        )
+    return search(
+        session,
+        query,
+        top_k,
+        build_id=build,
+        mode=selected_mode,
+        embedding_provider=provider,
+        bm25_candidate_k=runtime.settings.retrieval.bm25_candidate_k,
+        dense_candidate_k=runtime.settings.retrieval.dense_candidate_k,
+        rrf_k=runtime.settings.retrieval.rrf_k,
+        reranker=reranker,
+        rerank_candidate_k=rerank_candidate_k,
     )
 
 
@@ -633,20 +688,37 @@ def chunks_approve(ctx: typer.Context, manifest: Path) -> None:
 def index_build(
     ctx: typer.Context,
     profile: Annotated[
-        str, typer.Option("--profile", help="构建 hybrid 或兼容的 bm25 Profile")
+        str, typer.Option("--profile", help="构建 hybrid、layered 或兼容的 bm25 Profile")
     ] = "hybrid",
 ) -> None:
     """在临时目录构建索引，并在自检后发布。"""
     runtime = _runtime(ctx)
     provider = None
     try:
-        if profile not in {"bm25", "hybrid"}:
-            raise ValueError("--profile 只支持 bm25 或 hybrid")
-        if profile == "hybrid":
+        if profile not in {"bm25", "hybrid", "layered"}:
+            raise ValueError("--profile 只支持 bm25、hybrid 或 layered")
+        if profile in {"hybrid", "layered"}:
             provider = _embedding_provider(runtime.settings)
         with runtime.database.session() as session:
-            outcome = (
-                build_hybrid_index(
+            if profile == "layered":
+                assert provider is not None
+                layered = runtime.settings.layered
+                outcome = build_layered_index(
+                    session,
+                    runtime.settings.index_dir,
+                    provider,
+                    splitter_version=layered.splitter_version,
+                    target_chars=layered.target_chars,
+                    max_chars=layered.max_chars,
+                    tail_merge_chars=layered.tail_merge_chars,
+                    parent_candidate_k=layered.parent_candidate_k,
+                    child_candidate_k=layered.child_candidate_k,
+                    candidate_limit=layered.candidate_limit,
+                    rrf_k=runtime.settings.retrieval.rrf_k,
+                )
+            elif profile == "hybrid":
+                assert provider is not None
+                outcome = build_hybrid_index(
                     session,
                     runtime.settings.index_dir,
                     provider,
@@ -654,13 +726,22 @@ def index_build(
                     dense_candidate_k=runtime.settings.retrieval.dense_candidate_k,
                     rrf_k=runtime.settings.retrieval.rrf_k,
                 )
-                if provider is not None
-                else build_index(session, runtime.settings.index_dir)
+            else:
+                outcome = build_index(session, runtime.settings.index_dir)
+        if profile == "layered":
+            typer.echo(
+                f"分层实验索引：{outcome.build_id}，{outcome.chunk_count} 个子块，"
+                f"{outcome.duration_ms} ms，{outcome.path}"
             )
-        typer.echo(
-            f"活动索引：{outcome.build_id}，{outcome.chunk_count} 块，"
-            f"{outcome.duration_ms} ms，{outcome.path}"
-        )
+            typer.echo(
+                f'查询：uv run xifeng search "问题" --mode hybrid --rerank '
+                f"--layered --build {outcome.build_id}"
+            )
+        else:
+            typer.echo(
+                f"活动索引：{outcome.build_id}，{outcome.chunk_count} 块，"
+                f"{outcome.duration_ms} ms，{outcome.path}"
+            )
     except IndexBuildError as exc:
         with runtime.database.session() as session:
             record_build_failure(session, exc)
@@ -684,6 +765,9 @@ def search_command(
         int | None,
         typer.Option("--rerank-candidate-k", min=1, max=1000, help="覆盖重排候选深度"),
     ] = None,
+    layered: Annotated[
+        bool, typer.Option("--layered", help="使用显式指定的分层父子实验索引")
+    ] = False,
     as_json: Annotated[bool, typer.Option("--json", help="输出完整结构化候选")] = False,
     assemble_output: Annotated[
         bool,
@@ -698,6 +782,12 @@ def search_command(
         if rerank_candidate_k is not None and not rerank:
             raise ValueError("--rerank-candidate-k 只能与 --rerank 一起使用")
         selected_mode = _resolved_retrieval_mode(runtime, mode, build)
+        if layered and not rerank:
+            raise ValueError("--layered 必须同时启用 --rerank")
+        if layered and build is None:
+            raise ValueError("--layered 必须同时用 --build 指定分层实验索引")
+        if layered and rerank_candidate_k is not None:
+            raise ValueError("--layered 的候选深度由 layered 配置控制")
         if rerank and selected_mode != RetrievalMode.HYBRID:
             raise ValueError("--rerank 第一版只支持 --mode hybrid")
         if selected_mode in {RetrievalMode.DENSE, RetrievalMode.HYBRID}:
@@ -705,20 +795,19 @@ def search_command(
         if rerank:
             reranker = _reranker_provider(runtime.settings)
         with runtime.database.session() as session:
-            candidates = search(
+            candidates = _search_with_profile(
                 session,
+                runtime,
                 query,
                 top_k,
-                build_id=build,
-                mode=selected_mode,
-                embedding_provider=provider,
-                bm25_candidate_k=runtime.settings.retrieval.bm25_candidate_k,
-                dense_candidate_k=runtime.settings.retrieval.dense_candidate_k,
-                rrf_k=runtime.settings.retrieval.rrf_k,
+                build=build,
+                selected_mode=selected_mode,
+                provider=provider,
                 reranker=reranker,
                 rerank_candidate_k=(
                     rerank_candidate_k or runtime.settings.reranker.candidate_k
                 ),
+                layered=layered,
             )
         if assemble_output:
             result = assemble_context(candidates, _assembly_config(runtime.settings))
@@ -771,6 +860,9 @@ def ask_command(
         int | None,
         typer.Option("--rerank-candidate-k", min=1, max=1000, help="覆盖重排候选深度"),
     ] = None,
+    layered: Annotated[
+        bool, typer.Option("--layered", help="使用显式指定的分层父子实验索引")
+    ] = False,
     supplement: Annotated[
         SupplementPolicy,
         typer.Option("--supplement", help="模型补充分析策略：auto、on 或 off"),
@@ -785,6 +877,12 @@ def ask_command(
         if rerank_candidate_k is not None and not rerank:
             raise ValueError("--rerank-candidate-k 只能与 --rerank 一起使用")
         selected_mode = _resolved_retrieval_mode(runtime, mode, build)
+        if layered and not rerank:
+            raise ValueError("--layered 必须同时启用 --rerank")
+        if layered and build is None:
+            raise ValueError("--layered 必须同时用 --build 指定分层实验索引")
+        if layered and rerank_candidate_k is not None:
+            raise ValueError("--layered 的候选深度由 layered 配置控制")
         if rerank and selected_mode != RetrievalMode.HYBRID:
             raise ValueError("--rerank 第一版只支持 --mode hybrid")
         if selected_mode in {RetrievalMode.DENSE, RetrievalMode.HYBRID}:
@@ -792,20 +890,19 @@ def ask_command(
         if rerank:
             reranker = _reranker_provider(runtime.settings)
         with runtime.database.session() as session:
-            candidates = search(
+            candidates = _search_with_profile(
                 session,
+                runtime,
                 question,
                 top_k,
-                build_id=build,
-                mode=selected_mode,
-                embedding_provider=provider,
-                bm25_candidate_k=runtime.settings.retrieval.bm25_candidate_k,
-                dense_candidate_k=runtime.settings.retrieval.dense_candidate_k,
-                rrf_k=runtime.settings.retrieval.rrf_k,
+                build=build,
+                selected_mode=selected_mode,
+                provider=provider,
                 reranker=reranker,
                 rerank_candidate_k=(
                     rerank_candidate_k or runtime.settings.reranker.candidate_k
                 ),
+                layered=layered,
             )
         context = assemble_context(candidates, _assembly_config(runtime.settings))
         if context.status == AssemblyStatus.NO_EVIDENCE:
@@ -898,6 +995,17 @@ def eval_run(
         int | None,
         typer.Option("--rerank-candidate-k", min=1, max=1000, help="覆盖重排候选深度"),
     ] = None,
+    layered: Annotated[
+        bool, typer.Option("--layered", help="使用显式指定的分层父子实验索引")
+    ] = False,
+    layered_mode: Annotated[
+        LayeredRetrievalMode,
+        typer.Option("--layered-mode", help="分层实验召回：child 或 parent-child"),
+    ] = LayeredRetrievalMode.PARENT_CHILD,
+    neighbor_window: Annotated[
+        int | None,
+        typer.Option("--neighbor-window", min=0, max=10, help="覆盖分层相邻子块数量"),
+    ] = None,
 ) -> None:
     """运行冻结检索评测集。"""
     runtime = _runtime(ctx)
@@ -906,6 +1014,17 @@ def eval_run(
     try:
         if rerank_candidate_k is not None and not rerank:
             raise ValueError("--rerank-candidate-k 只能与 --rerank 一起使用")
+        if layered and not rerank:
+            raise ValueError("--layered 必须同时启用 --rerank")
+        if layered and build is None:
+            raise ValueError("--layered 必须同时用 --build 指定分层实验索引")
+        if layered and rerank_candidate_k is not None:
+            raise ValueError("--layered 的候选深度由 layered 配置控制")
+        if not layered and (
+            layered_mode != LayeredRetrievalMode.PARENT_CHILD
+            or neighbor_window is not None
+        ):
+            raise ValueError("--layered-mode 和 --neighbor-window 只能与 --layered 一起使用")
         legacy_path = Path(evalset)
         selected_mode = (
             RetrievalMode.BM25
@@ -936,6 +1055,20 @@ def eval_run(
                     rerank_candidate_k=(
                         rerank_candidate_k or runtime.settings.reranker.candidate_k
                     ),
+                    layered=layered,
+                    layered_parent_candidate_k=(
+                        runtime.settings.layered.parent_candidate_k
+                    ),
+                    layered_child_candidate_k=(
+                        runtime.settings.layered.child_candidate_k
+                    ),
+                    layered_candidate_limit=runtime.settings.layered.candidate_limit,
+                    layered_neighbor_window=(
+                        neighbor_window
+                        if neighbor_window is not None
+                        else runtime.settings.layered.neighbor_window
+                    ),
+                    layered_mode=layered_mode,
                 )
             )
         typer.echo(json.dumps(outcome, ensure_ascii=False, indent=2))

@@ -74,6 +74,24 @@ def _evidence(candidate: RetrievalCandidate, input_rank: int, citation_number: i
         topic_title=candidate.topic_title,
         context_summary=candidate.context_summary,
         compression_method=CompressionMethod.NONE,
+        matched_ranges=list(candidate.matched_ranges),
+        matched_child_ids=list(candidate.matched_child_ids),
+        matched_child_ranks=list(candidate.matched_child_ranks),
+        expanded_range=candidate.expanded_range,
+        neighbor_trimmed=candidate.neighbor_trimmed,
+    )
+
+
+def _without_neighbor_expansion(candidate: RetrievalCandidate) -> RetrievalCandidate:
+    if candidate.matched_original_text is None or candidate.matched_bounding_range is None:
+        return candidate
+    return candidate.model_copy(
+        update={
+            "original_text": candidate.matched_original_text,
+            "paragraph_range": candidate.matched_bounding_range,
+            "expanded_range": candidate.matched_bounding_range,
+            "neighbor_trimmed": True,
+        }
     )
 
 
@@ -174,6 +192,19 @@ def assemble_context(
             continue
 
         hypothetical = render_context([*selected, item], config.include_ai_metadata)
+        if len(hypothetical) > config.max_total_chars:
+            trimmed_candidate = _without_neighbor_expansion(candidate)
+            if trimmed_candidate is not candidate:
+                trimmed_item = _evidence(trimmed_candidate, rank, len(selected) + 1)
+                trimmed_hypothetical = render_context(
+                    [*selected, trimmed_item], config.include_ai_metadata
+                )
+                if len(trimmed_hypothetical) <= config.max_total_chars:
+                    item = trimmed_item
+                    item_chars = _individual_rendered_chars(
+                        item, config.include_ai_metadata
+                    )
+                    hypothetical = trimmed_hypothetical
         if len(hypothetical) > config.max_total_chars:
             if not selected:
                 raise _error(

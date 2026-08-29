@@ -13,8 +13,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from xifeng_rag.corpus import stable_id
-from xifeng_rag.domain import RetrievalMode
-from xifeng_rag.indexing import EmbeddingProvider, search
+from xifeng_rag.domain import LayeredRetrievalMode, RetrievalMode
+from xifeng_rag.indexing import EmbeddingProvider, search, search_layered
+from xifeng_rag.layered_retrieval import read_child_manifest
 from xifeng_rag.reranking import Reranker
 from xifeng_rag.storage import (
     EvaluationDatasetRow,
@@ -129,6 +130,12 @@ def run_frozen_evaluation(
     rrf_k: int = 60,
     reranker: Reranker | None = None,
     rerank_candidate_k: int = 20,
+    layered: bool = False,
+    layered_parent_candidate_k: int = 5,
+    layered_child_candidate_k: int = 20,
+    layered_candidate_limit: int = 128,
+    layered_neighbor_window: int = 1,
+    layered_mode: LayeredRetrievalMode | str = LayeredRetrievalMode.PARENT_CHILD,
 ) -> dict[str, object]:
     if k <= 0:
         raise ValueError("k 必须大于 0")
@@ -155,6 +162,11 @@ def run_frozen_evaluation(
     )
     if not questions:
         raise ValueError("冻结评测集没有问题")
+    child_manifest = (
+        read_child_manifest(Path(build.path) / "children.json") if layered else []
+    )
+    if layered and (embedding_provider is None or reranker is None or build_id is None):
+        raise ValueError("分层评测需要显式 Build、Embedding Provider 和 Reranker")
     details: list[dict[str, object]] = []
     for question in questions:
         evidence = list(
@@ -185,25 +197,78 @@ def run_frozen_evaluation(
             )
         }
         started = time.perf_counter()
-        candidates = search(
-            session,
-            question.query,
-            top_k=k,
-            build_id=build.id,
-            mode=mode,
-            embedding_provider=embedding_provider,
-            bm25_candidate_k=bm25_candidate_k,
-            dense_candidate_k=dense_candidate_k,
-            rrf_k=rrf_k,
-            reranker=reranker,
-            rerank_candidate_k=rerank_candidate_k,
-        )
+        if layered:
+            assert embedding_provider is not None and reranker is not None
+            candidates = search_layered(
+                session,
+                question.query,
+                build_id=build.id,
+                embedding_provider=embedding_provider,
+                reranker=reranker,
+                top_k=k,
+                parent_candidate_k=layered_parent_candidate_k,
+                child_candidate_k=layered_child_candidate_k,
+                candidate_limit=layered_candidate_limit,
+                rrf_k=rrf_k,
+                neighbor_window=layered_neighbor_window,
+                layer_mode=layered_mode,
+            )
+        else:
+            candidates = search(
+                session,
+                question.query,
+                top_k=k,
+                build_id=build.id,
+                mode=mode,
+                embedding_provider=embedding_provider,
+                bm25_candidate_k=bm25_candidate_k,
+                dense_candidate_k=dense_candidate_k,
+                rrf_k=rrf_k,
+                reranker=reranker,
+                rerank_candidate_k=rerank_candidate_k,
+            )
         latency_ms = (time.perf_counter() - started) * 1000
         ranked = [item.chunk_id for item in candidates]
         retrieved_ranges = [
             (item.article_version, item.paragraph_range[0], item.paragraph_range[1])
             for item in candidates
         ]
+        matched_ranges = [
+            (item.article_version, start, end)
+            for item in candidates
+            for start, end in (item.matched_ranges or [item.paragraph_range])
+        ]
+        if layered:
+            relevant_child_ids = {
+                item.id
+                for item in child_manifest
+                if any(
+                    item.article_version == version_id
+                    and item.start_paragraph <= end
+                    and item.end_paragraph >= start
+                    for version_id, start, end in evidence_ranges
+                )
+            }
+            ranked_children = [
+                child_id
+                for child_id, _rank in sorted(
+                    [
+                        ranked_child
+                        for item in candidates
+                        for ranked_child in item.matched_child_ranks
+                    ],
+                    key=lambda item: (item[1], item[0]),
+                )
+            ]
+            question_precision = precision_at_k(ranked_children, relevant_child_ids, k)
+            question_recall = recall_at_k(ranked_children, relevant_child_ids, k)
+            question_mrr = reciprocal_rank(ranked_children, relevant_child_ids)
+            question_ndcg = ndcg_at_k(ranked_children, relevant_child_ids, k)
+        else:
+            question_precision = precision_at_k(ranked, relevant, k)
+            question_recall = recall_at_k(ranked, relevant, k)
+            question_mrr = reciprocal_rank(ranked, relevant)
+            question_ndcg = ndcg_at_k(ranked, relevant, k)
         details.append(
             {
                 "question_id": question.id,
@@ -214,20 +279,52 @@ def run_frozen_evaluation(
                         "chunk_id": item.chunk_id,
                         "source": item.source,
                         "scores": item.retrieval_scores.model_dump(),
+                        "layer_sources": item.layer_sources,
+                        "parent_scores": (
+                            item.parent_retrieval_scores.model_dump()
+                            if item.parent_retrieval_scores is not None
+                            else None
+                        ),
+                        "child_scores": (
+                            item.child_retrieval_scores.model_dump()
+                            if item.child_retrieval_scores is not None
+                            else None
+                        ),
+                        "matched_child_ids": item.matched_child_ids,
+                        "matched_child_ranks": item.matched_child_ranks,
+                        "matched_ranges": item.matched_ranges,
+                        "expanded_range": item.expanded_range,
                     }
                     for item in candidates
                 ],
                 "mapped_relevant_chunk_ids": sorted(relevant),
-                "precision_at_k": precision_at_k(ranked, relevant, k),
-                "recall_at_k": recall_at_k(ranked, relevant, k),
-                "mrr": reciprocal_rank(ranked, relevant),
-                "ndcg_at_k": ndcg_at_k(ranked, relevant, k),
+                "precision_at_k": question_precision,
+                "recall_at_k": question_recall,
+                "mrr": question_mrr,
+                "ndcg_at_k": question_ndcg,
                 "evidence_coverage_at_k": evidence_coverage_at_k(
-                    retrieved_ranges, evidence_ranges, k
+                    matched_ranges if layered else retrieved_ranges, evidence_ranges, k
+                ),
+                "expanded_evidence_coverage_at_k": (
+                    evidence_coverage_at_k(retrieved_ranges, evidence_ranges, k)
+                    if layered
+                    else None
                 ),
                 "latency_ms": latency_ms,
                 "should_abstain": not question.answerable,
                 "retrieval_mode": str(RetrievalMode(mode)),
+                "layered": layered,
+                "layered_config": (
+                    {
+                        "parent_candidate_k": layered_parent_candidate_k,
+                        "child_candidate_k": layered_child_candidate_k,
+                        "candidate_limit": layered_candidate_limit,
+                        "neighbor_window": layered_neighbor_window,
+                        "layer_mode": str(LayeredRetrievalMode(layered_mode)),
+                    }
+                    if layered
+                    else None
+                ),
             }
         )
     metric_names = [
@@ -241,6 +338,10 @@ def run_frozen_evaluation(
         name: statistics.fmean(float(str(item[name])) for item in details)
         for name in metric_names
     }
+    if layered:
+        metrics["expanded_evidence_coverage_at_k"] = statistics.fmean(
+            float(str(item["expanded_evidence_coverage_at_k"])) for item in details
+        )
     latencies = [float(str(item["latency_ms"])) for item in details]
     metrics["latency_mean_ms"] = statistics.fmean(latencies)
     metrics["latency_p95_ms"] = sorted(latencies)[
@@ -299,6 +400,17 @@ def run_frozen_evaluation(
         "dataset_id": dataset.id,
         "retrieval_mode": str(RetrievalMode(mode)),
         "reranker": reranker_metadata if reranker is not None else None,
+        "layered": (
+            {
+                "parent_candidate_k": layered_parent_candidate_k,
+                "child_candidate_k": layered_child_candidate_k,
+                "candidate_limit": layered_candidate_limit,
+                "neighbor_window": layered_neighbor_window,
+                "layer_mode": str(LayeredRetrievalMode(layered_mode)),
+            }
+            if layered
+            else None
+        ),
         "metrics": metrics,
     }
 

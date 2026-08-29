@@ -17,6 +17,15 @@ retrieval:
   bm25_candidate_k: 5
   dense_candidate_k: 5
   rrf_k: 60
+layered:
+  splitter_version: atomic-greedy-v1
+  target_chars: 400
+  max_chars: 600
+  tail_merge_chars: 200
+  parent_candidate_k: 5
+  child_candidate_k: 20
+  candidate_limit: 128
+  neighbor_window: 1
 reranker:
   provider: sentence-transformers
   model_id: BAAI/bge-reranker-v2-m3

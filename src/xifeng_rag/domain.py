@@ -32,12 +32,18 @@ class BuildStatus(StrEnum):
     ACTIVE = "active"
     FAILED = "failed"
     SUPERSEDED = "superseded"
+    READY = "ready"
 
 
 class RetrievalMode(StrEnum):
     BM25 = "bm25"
     DENSE = "dense"
     HYBRID = "hybrid"
+
+
+class LayeredRetrievalMode(StrEnum):
+    CHILD = "child"
+    PARENT_CHILD = "parent-child"
 
 
 class AssemblyStatus(StrEnum):
@@ -148,6 +154,18 @@ class RetrievalCandidate(BaseModel):
     source: list[str] = Field(default_factory=lambda: ["bm25"])
     topic_title: str | None = None
     context_summary: str | None = None
+    parent_chunk_id: str | None = None
+    matched_ranges: list[tuple[int, int]] = Field(default_factory=list)
+    matched_child_ids: list[str] = Field(default_factory=list)
+    matched_child_ranks: list[tuple[str, int]] = Field(default_factory=list)
+    expanded_range: tuple[int, int] | None = None
+    layer_sources: list[str] = Field(default_factory=list)
+    parent_retrieval_scores: RetrievalScores | None = None
+    child_retrieval_scores: RetrievalScores | None = None
+    candidate_rank: int | None = Field(default=None, ge=1)
+    matched_original_text: str | None = Field(default=None, exclude=True)
+    matched_bounding_range: tuple[int, int] | None = Field(default=None, exclude=True)
+    neighbor_trimmed: bool = False
 
 
 class ContextAssemblyConfigSnapshot(BaseModel):
@@ -171,6 +189,11 @@ class EvidenceItem(BaseModel):
     topic_title: str | None = None
     context_summary: str | None = None
     compression_method: CompressionMethod = CompressionMethod.NONE
+    matched_ranges: list[tuple[int, int]] = Field(default_factory=list)
+    matched_child_ids: list[str] = Field(default_factory=list)
+    matched_child_ranks: list[tuple[str, int]] = Field(default_factory=list)
+    expanded_range: tuple[int, int] | None = None
+    neighbor_trimmed: bool = False
 
     @model_validator(mode="after")
     def valid_evidence_ranges(self) -> EvidenceItem:

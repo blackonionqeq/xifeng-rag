@@ -102,8 +102,9 @@ source
 
 ## 6. 确定性上下文组装
 
-Reranker 之后由普通 Python `ContextAssembler` 将排序候选转换为结构化证据上下文。它保持
-完整 TopicChunk 和输入顺序，只执行完全重复去重、数量/字符预算、查询内引用编号、来源追踪、
+Reranker 之后由普通 Python `ContextAssembler` 将排序候选转换为结构化证据上下文。默认路径
+保持完整 TopicChunk；手动启用的分层实验路径接收已完成同父块相邻扩展的子块候选。组装器只
+执行完全重复去重、数量/字符预算、查询内引用编号、来源追踪、
 排除原因和规范 JSON 渲染。默认最多 5 块、总渲染上限 50,000 字符；不做语义判断、块内
 截断、文章配额、重新检索或网络调用。
 
@@ -129,7 +130,8 @@ Article
 - `ArticleVersion` 分别保存原始文件哈希、规范正文哈希、清洗规则版本和版本状态。
 - `ChunkProposal` 保存本地模型提出的单元边界、内容角色、话题标题、概括及生成版本。
 - `ApprovedChunkManifest` 保存用户确认的完整不可变分块方案，包括不进入检索的样板内容。
-- `TopicChunk` 是唯一检索单位，只从实质内容生成，保存单元范围、原文和检索辅助字段。
+- `TopicChunk` 是人工确认的语义父块，也是默认检索单位；分层实验可在 Build 内从其原子单元
+  范围确定性派生子块。子块不产生新的审核状态，也不改变批准清单。
 - `IndexArtifact` 保存某个索引 profile 的索引文本、Embedding 模型和构建状态。
 - `EvaluationDataset` 保存人工问题、审核后的参考答案与稳定证据范围；冻结时绑定完整语料
   快照与内容哈希，AI 候选只作为可审计草案存在。
@@ -155,6 +157,10 @@ embedding_model: Qwen/Qwen3-Embedding-0.6B
 ```
 
 不同 profile 使用独立索引，防止向量空间、切块方式或实验数据相互污染。Reranker 与 Generator 属于查询期配置，不要求重建索引。
+
+父子分层 Profile 以非活动 `ready` 状态发布，必须通过 Build ID 显式查询，不替换默认活动
+索引。详细协议见
+[`docs/specs/2026-08-29-layered-child-retrieval-design.md`](../specs/2026-08-29-layered-child-retrieval-design.md)。
 
 ## 9. 可观测性与可复现性
 

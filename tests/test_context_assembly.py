@@ -129,6 +129,33 @@ def test_first_candidate_over_budget_is_a_classified_error_without_body() -> Non
     assert private_body not in str(raised.value)
 
 
+def test_budget_drops_neighbor_expansion_before_dropping_match() -> None:
+    expanded = candidate(1, "左邻居" * 100 + "命中" + "右邻居" * 100).model_copy(
+        update={
+            "paragraph_range": (1, 3),
+            "matched_ranges": [(2, 2)],
+            "expanded_range": (1, 3),
+            "matched_original_text": "命中",
+            "matched_bounding_range": (2, 2),
+        }
+    )
+    matched = expanded.model_copy(
+        update={
+            "original_text": "命中",
+            "paragraph_range": (2, 2),
+            "expanded_range": (2, 2),
+            "neighbor_trimmed": True,
+        }
+    )
+    budget = assemble_context([matched], config()).usage.rendered_context_chars
+
+    result = assemble_context([expanded], config(max_chars=budget))
+
+    assert result.evidence_items[0].original_text == "命中"
+    assert result.evidence_items[0].selected_paragraph_range == (2, 2)
+    assert result.evidence_items[0].neighbor_trimmed
+
+
 def test_empty_candidates_return_deterministic_no_evidence() -> None:
     first = assemble_context([], config())
     second = assemble_context([], config())

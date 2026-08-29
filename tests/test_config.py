@@ -120,6 +120,11 @@ def test_embedding_cache_path_and_retrieval_defaults(tmp_path: Path) -> None:
     assert settings.retrieval.bm25_candidate_k == 5
     assert settings.retrieval.dense_candidate_k == 5
     assert settings.retrieval.rrf_k == 60
+    assert settings.layered.target_chars == 400
+    assert settings.layered.max_chars == 600
+    assert settings.layered.parent_candidate_k == 5
+    assert settings.layered.child_candidate_k == 20
+    assert settings.layered.candidate_limit == 128
     assert settings.reranker.model_id == "BAAI/bge-reranker-v2-m3"
     assert settings.reranker.max_pair_tokens == 1024
     assert settings.reranker.candidate_k == 5
@@ -131,6 +136,16 @@ def test_embedding_cache_path_and_retrieval_defaults(tmp_path: Path) -> None:
     assert settings.generator.api_key_env == "DEEPSEEK_API_KEY"
     assert settings.generator.model == "deepseek-v4-flash"
     assert settings.generator.max_output_tokens == 4096
+
+
+def test_layered_chunk_sizes_are_validated(tmp_path: Path) -> None:
+    config = tmp_path / "settings.yaml"
+    config.write_text(
+        "layered:\n  target_chars: 700\n  max_chars: 600\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="target_chars"):
+        load_settings(config)
 
 
 def test_context_assembly_yaml_and_environment_settings(

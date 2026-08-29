@@ -239,7 +239,7 @@ def rerank_candidates(
     scored.sort(
         key=lambda item: (
             -float(item.retrieval_scores.reranker or 0.0),
-            item.retrieval_scores.rrf_rank or 10**9,
+            item.candidate_rank or item.retrieval_scores.rrf_rank or 10**9,
             item.chunk_id,
         )
     )

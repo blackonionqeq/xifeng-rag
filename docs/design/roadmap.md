@@ -37,8 +37,9 @@ TopicChunk，并额外报告 evidence coverage@K。
 1. 话题块原文与 AI 上下文化索引文本对比；
 2. 不同本地 Embedding 模型对比；
 3. 无重排与不同本地 Reranker 对比；
-4. DeepSeek Generator 的提示词、忠实度、完整性和延迟分析；
-5. AI 话题长块、固定长度小块和父子分块对比。
+4. TopicChunk、确定性子块、父子并行召回及相邻扩展的 A/B/C/D 对比；
+5. DeepSeek Generator 的提示词、忠实度、完整性和延迟分析；
+6. AI 话题长块、固定长度小块和父子分块对比。
 
 第一阶段的本地模型只负责离线语义分块和概括。后续再研究更完整的 Contextual Retrieval，以及本地/外部 Generator 对比。查询改写、HyDE、RAPTOR、上下文压缩、Self-RAG 等方法先列为候选，不在第一阶段同时实现。
 

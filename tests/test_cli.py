@@ -116,6 +116,29 @@ def test_search_reranker_requires_hybrid_mode(tmp_path: Path) -> None:
     assert "只支持 --mode hybrid" in result.output
 
 
+def test_layered_search_requires_explicit_build(tmp_path: Path) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        f"project_root: {tmp_path.as_posix()}\nstorage:\n  data_dir: data\n",
+        encoding="utf-8",
+    )
+    result = runner.invoke(
+        app,
+        [
+            "--config",
+            str(config),
+            "search",
+            "问题",
+            "--mode",
+            "hybrid",
+            "--rerank",
+            "--layered",
+        ],
+    )
+    assert result.exit_code == 1
+    assert "--build" in result.output
+
+
 def test_rerank_candidate_depth_option_is_validated_by_cli(tmp_path: Path) -> None:
     config = tmp_path / "config.yaml"
     config.write_text(

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import yaml
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -43,6 +43,25 @@ class RetrievalSettings(BaseModel):
     bm25_candidate_k: int = Field(default=5, gt=0, le=1000)
     dense_candidate_k: int = Field(default=5, gt=0, le=1000)
     rrf_k: int = Field(default=60, gt=0)
+
+
+class LayeredRetrievalSettings(BaseModel):
+    splitter_version: str = Field(default="atomic-greedy-v1", min_length=1)
+    target_chars: int = Field(default=400, gt=0)
+    max_chars: int = Field(default=600, gt=0)
+    tail_merge_chars: int = Field(default=200, ge=0)
+    parent_candidate_k: int = Field(default=5, gt=0, le=1000)
+    child_candidate_k: int = Field(default=20, gt=0, le=1000)
+    candidate_limit: int = Field(default=128, gt=0, le=5000)
+    neighbor_window: int = Field(default=1, ge=0, le=10)
+
+    @model_validator(mode="after")
+    def validate_sizes(self) -> LayeredRetrievalSettings:
+        if self.target_chars > self.max_chars:
+            raise ValueError("layered.target_chars 不能大于 max_chars")
+        if self.tail_merge_chars > self.target_chars:
+            raise ValueError("layered.tail_merge_chars 不能大于 target_chars")
+        return self
 
 
 class RerankerSettings(BaseModel):
@@ -115,6 +134,7 @@ class Settings(BaseSettings):
     storage: StorageSettings = Field(default_factory=StorageSettings)
     embedding: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
     retrieval: RetrievalSettings = Field(default_factory=RetrievalSettings)
+    layered: LayeredRetrievalSettings = Field(default_factory=LayeredRetrievalSettings)
     reranker: RerankerSettings = Field(default_factory=RerankerSettings)
     context_assembly: ContextAssemblySettings = Field(default_factory=ContextAssemblySettings)
     generator: GeneratorSettings = Field(default_factory=GeneratorSettings)
