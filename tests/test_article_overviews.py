@@ -10,6 +10,7 @@ from xifeng_rag.article_overviews import (
     overview_source,
     propose_article_overview,
     render_overview_prompt,
+    revise_pending_article_overview,
 )
 from xifeng_rag.corpus import scan_corpus
 from xifeng_rag.domain import OverviewStatus, ProposalStatus, VersionStatus
@@ -104,6 +105,8 @@ def test_overview_uses_all_manifest_topics_without_original_text(
         assert "提出自造问题" in prompt
         assert "include_in_index" in prompt
         assert "第一段" not in prompt
+        assert "优选 80 至 140 字，最长不超过 200 字" in prompt
+        assert "本文旨在" in prompt
         row = propose_article_overview(session, version_id, generator, "fake-model")
         overview_id = row.id
         assert row.status == OverviewStatus.PENDING_REVIEW.value
@@ -118,3 +121,44 @@ def test_overview_uses_all_manifest_topics_without_original_text(
             select(ArticleOverviewRow).where(ArticleOverviewRow.id == overview_id)
         )
         assert stored is not None
+
+
+def test_revise_pending_overview_preserves_history_and_rejects_approved(
+    database: Database, tmp_path: Path
+) -> None:
+    version_id = _approved_version(database, tmp_path)
+    generator = FakeGenerator()
+    with database.session() as session:
+        previous = propose_article_overview(session, version_id, generator, "local-model")
+        previous_id = previous.id
+
+    with database.session() as session:
+        replacement = revise_pending_article_overview(
+            session,
+            previous_id,
+            generator,
+            "deepseek-v4-flash",
+            provider_id="deepseek",
+        )
+        replacement_id = replacement.id
+        assert replacement_id != previous_id
+        assert replacement.provider_id == "deepseek"
+        assert replacement.status == OverviewStatus.PENDING_REVIEW.value
+        prior = session.get(ArticleOverviewRow, previous_id)
+        assert prior is not None
+        assert prior.status == OverviewStatus.SUPERSEDED.value
+
+    with database.session() as session:
+        approve_article_overview(session, replacement_id)
+        try:
+            revise_pending_article_overview(
+                session,
+                replacement_id,
+                generator,
+                "deepseek-v4-flash",
+                provider_id="deepseek",
+            )
+        except ValueError as exc:
+            assert "只允许精简待审概括" in str(exc)
+        else:
+            raise AssertionError("已批准概括不应允许批量精简")

@@ -79,6 +79,7 @@ uv run xifeng chunks review <ARTICLE_VERSION> --proposal <PROPOSAL_ID>
 uv run xifeng chunks approve data/reviews/<ARTICLE_VERSION>.review.json
 uv run xifeng overviews propose
 uv run xifeng overviews list
+uv run xifeng overviews revise-pending --provider deepseek
 uv run xifeng overviews approve <OVERVIEW_ID> --summary-file <PATH>
 uv run xifeng index build
 uv run xifeng index build --profile layered
@@ -111,6 +112,9 @@ uv run xifeng eval run <FROZEN_DATASET_ID> --mode hybrid --rerank --rewrite --k 
 `overviews propose` 只处理带完整批准清单的活动文章，输入为标题、全部批准话题标题、块级
 概括、关键词和索引决定，不包含 `original_text`。命令按需启动本地 Ollama，生成结束后关闭
 本次启动的服务。草稿可在语料管理页编辑并批准；未批准概括不会进入后续文章级索引。
+概括优选适合列表扫读的 80 至 140 字，最长不超过 200 字。`overviews revise-pending --provider deepseek`
+可在用户显式触发后批量精简待审概括；它只外发上述派生元数据，不发送正文，不修改已批准
+概括，并保留被替换草稿与生成来源供审计。
 
 已确认不完整或不应导入的单篇文章可在本地配置的
 `corpus.excluded_article_ids` 中按稳定文章 ID 排除。排除不会修改外部语料；扫描会单独

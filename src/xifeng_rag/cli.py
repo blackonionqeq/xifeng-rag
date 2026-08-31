@@ -17,6 +17,7 @@ from xifeng_rag import __version__
 from xifeng_rag.article_overviews import (
     approve_article_overview,
     propose_article_overview,
+    revise_pending_article_overview,
 )
 from xifeng_rag.chunking import (
     CodexCliClient,
@@ -39,6 +40,7 @@ from xifeng_rag.domain import (
     EvidenceAssessment,
     EvidenceAssessmentStatus,
     LayeredRetrievalMode,
+    OverviewStatus,
     ProposalStatus,
     RetrievalCandidate,
     RetrievalMode,
@@ -851,6 +853,74 @@ def overviews_list(ctx: typer.Context) -> None:
                 f"  {version.id}  {overview.provider_id}/{overview.model_id}\n"
                 f"  {overview.article_summary}"
             )
+
+
+@overviews_app.command("revise-pending")
+def overviews_revise_pending(
+    ctx: typer.Context,
+    overview_ids: Annotated[
+        list[str] | None, typer.Argument(help="可选的待审概括 ID 列表")
+    ] = None,
+    provider: Annotated[
+        str, typer.Option(help="显式使用的外部结构化生成 profile")
+    ] = "deepseek",
+    model: Annotated[str | None, typer.Option(help="覆盖 profile 默认模型")] = None,
+) -> None:
+    """用外部模型精简待审概括；只发送标题和批准分块元数据，不发送正文。"""
+    runtime = _runtime(ctx)
+    try:
+        profile = runtime.settings.chunking.external_profiles.get(provider)
+        if profile is None:
+            raise ValueError(f"外部 profile 不存在：{provider}")
+        selected_model = model or profile.default_model
+        api_key = os.environ.get(profile.api_key_env)
+        if not api_key:
+            raise ValueError(f"环境变量未设置：{profile.api_key_env}")
+        with runtime.database.session() as session:
+            statement = select(ArticleOverviewRow).where(
+                ArticleOverviewRow.status == OverviewStatus.PENDING_REVIEW.value
+            )
+            if overview_ids:
+                statement = statement.where(ArticleOverviewRow.id.in_(overview_ids))
+            rows = list(
+                session.scalars(statement.order_by(ArticleOverviewRow.created_at)).all()
+            )
+            pending_ids = [row.id for row in rows]
+        if not pending_ids:
+            raise ValueError("没有符合条件的待审文章概括")
+        typer.echo(
+            f"将使用 {provider}/{selected_model} 精简 {len(pending_ids)} 篇待审概括；"
+            "仅发送文章标题与完整批准分块元数据，不发送原文。"
+        )
+        generator = OpenAICompatibleClient(profile, selected_model, api_key)
+        failed = False
+        for overview_id in pending_ids:
+            try:
+                with runtime.database.session() as session:
+                    replacement = revise_pending_article_overview(
+                        session,
+                        overview_id,
+                        generator,
+                        selected_model,
+                        provider_id=provider,
+                    )
+                    version = session.get(ArticleVersionRow, replacement.version_id)
+                    article = (
+                        session.get(ArticleRow, version.article_id)
+                        if version is not None
+                        else None
+                    )
+                    title = article.title if article is not None else replacement.version_id
+                typer.echo(f"{replacement.id}  pending_review  {title}")
+            except Exception as exc:
+                failed = True
+                typer.echo(
+                    f"{overview_id}  failed  {type(exc).__name__}: {exc}", err=True
+                )
+        if failed:
+            raise RuntimeError("部分待审概括精简失败；成功项已保留")
+    except Exception as exc:
+        _abort(exc)
 
 
 @overviews_app.command("approve")

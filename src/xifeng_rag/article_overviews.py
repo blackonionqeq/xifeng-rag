@@ -19,17 +19,19 @@ from xifeng_rag.storage import (
 )
 from xifeng_rag.structured_generation import StructuredGenerator
 
-PROMPT_VERSION = "article-overview-v1-from-topic-metadata"
+PROMPT_VERSION = "article-overview-v2-concise-from-topic-metadata"
 SCHEMA_VERSION = "article-overview-v1"
 
 DEFAULT_INSTRUCTION = """请根据文章标题和完整的话题分块元数据，生成一段忠实的文章整体概括。
 
 要求：
-1. 说明文章试图回答的主要问题、核心分析框架和主要结论。
+1. 优先说明核心判断，再交代主要论证路径和重要延伸主题。
 2. 综合各话题之间的关系，不要逐块机械抄写或简单罗列。
 3. 只能使用给定元数据，不补充外部事实，不复制或假装引用作者原话。
 4. 保留对按主题反查文章有帮助的概念和近义表达。
-5. 使用一段简洁中文，建议 120 至 350 字，只返回 article_summary。"""
+5. 使用一段简洁中文，优选 80 至 140 字，最长不超过 200 字，最多 2 至 3 句。
+6. 不使用“本文旨在”“文章指出”“整体框架揭示”等空泛套话，不重复结论。
+7. 只返回 article_summary。"""
 
 
 def article_overview_schema() -> dict[str, object]:
@@ -145,6 +147,35 @@ def propose_article_overview(
     row.status = OverviewStatus.PENDING_REVIEW.value
     row.generation_json = json.dumps(result.metadata, ensure_ascii=False)
     return row
+
+
+def revise_pending_article_overview(
+    session: Session,
+    overview_id: str,
+    generator: StructuredGenerator,
+    model_id: str,
+    *,
+    provider_id: str,
+) -> ArticleOverviewRow:
+    """Generate a replacement draft while preserving the prior draft for audit."""
+    previous = session.get(ArticleOverviewRow, overview_id)
+    if previous is None:
+        raise ValueError("文章概括不存在")
+    if previous.status != OverviewStatus.PENDING_REVIEW.value:
+        raise ValueError(f"只允许精简待审概括：{previous.status}")
+    replacement = propose_article_overview(
+        session,
+        previous.version_id,
+        generator,
+        model_id,
+        provider_id=provider_id,
+        proposal_id=previous.proposal_id,
+    )
+    if replacement.status != OverviewStatus.PENDING_REVIEW.value:
+        raise RuntimeError(f"精简概括生成失败：{replacement.status}")
+    if replacement.id != previous.id:
+        previous.status = OverviewStatus.SUPERSEDED.value
+    return replacement
 
 
 def approve_article_overview(
