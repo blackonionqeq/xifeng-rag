@@ -4,7 +4,7 @@ import json
 import os
 import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Annotated
 from uuid import uuid4
@@ -18,6 +18,12 @@ from xifeng_rag.article_overviews import (
     approve_article_overview,
     propose_article_overview,
     revise_pending_article_overview,
+)
+from xifeng_rag.article_search import (
+    ArticleIndexBuildError,
+    build_article_index,
+    record_article_build_failure,
+    search_articles,
 )
 from xifeng_rag.chunking import (
     CodexCliClient,
@@ -99,12 +105,14 @@ index_app = typer.Typer(help="BM25 索引")
 eval_app = typer.Typer(help="检索评测")
 generator_app = typer.Typer(help="外部回答 Generator 诊断")
 overviews_app = typer.Typer(help="文章整体概括生成与审核")
+articles_app = typer.Typer(help="独立的文章发现与主题反查")
 app.add_typer(corpus_app, name="corpus")
 app.add_typer(chunks_app, name="chunks")
 app.add_typer(index_app, name="index")
 app.add_typer(eval_app, name="eval")
 app.add_typer(generator_app, name="generator")
 app.add_typer(overviews_app, name="overviews")
+app.add_typer(articles_app, name="articles")
 
 
 @dataclass
@@ -942,6 +950,91 @@ def overviews_approve(
         typer.echo(f"已批准文章概括：{row.id}")
     except Exception as exc:
         _abort(exc)
+
+
+@articles_app.command("build-index")
+def articles_build_index(ctx: typer.Context) -> None:
+    """只用已批准文章概括构建独立的文章级 Hybrid 索引。"""
+    runtime = _runtime(ctx)
+    provider = None
+    try:
+        provider = _embedding_provider(runtime.settings)
+        with runtime.database.session() as session:
+            outcome = build_article_index(
+                session,
+                runtime.settings.article_index_dir,
+                provider,
+                bm25_candidate_k=runtime.settings.retrieval.bm25_candidate_k,
+                dense_candidate_k=runtime.settings.retrieval.dense_candidate_k,
+                rrf_k=runtime.settings.retrieval.rrf_k,
+            )
+        typer.echo(
+            f"活动文章索引：{outcome.build_id}，{outcome.article_count} 篇，"
+            f"{outcome.duration_ms} ms，{outcome.path}"
+        )
+    except ArticleIndexBuildError as exc:
+        with runtime.database.session() as session:
+            record_article_build_failure(session, exc)
+        _abort(exc)
+    except Exception as exc:
+        _abort(exc)
+    finally:
+        if provider is not None:
+            provider.close()
+
+
+@articles_app.command("search")
+def articles_search(
+    ctx: typer.Context,
+    query: Annotated[str, typer.Argument(help="想反查文章的主题描述")],
+    top_k: Annotated[int, typer.Option("--top-k", min=1, max=100)] = 5,
+    mode: Annotated[RetrievalMode, typer.Option("--mode")] = RetrievalMode.HYBRID,
+    build: Annotated[str | None, typer.Option("--build")] = None,
+    as_json: Annotated[bool, typer.Option("--json", help="输出结构化文章列表")] = False,
+) -> None:
+    """搜索相关文章；结果不是原文证据，也不进入现有问答权重。"""
+    runtime = _runtime(ctx)
+    provider = None
+    try:
+        if mode in {RetrievalMode.DENSE, RetrievalMode.HYBRID}:
+            provider = _embedding_provider(runtime.settings)
+        with runtime.database.session() as session:
+            results = search_articles(
+                session,
+                query,
+                top_k,
+                mode=mode,
+                embedding_provider=provider,
+                build_id=build,
+                bm25_candidate_k=runtime.settings.retrieval.bm25_candidate_k,
+                dense_candidate_k=runtime.settings.retrieval.dense_candidate_k,
+                rrf_k=runtime.settings.retrieval.rrf_k,
+            )
+        if as_json:
+            typer.echo(json.dumps([asdict(item) for item in results], ensure_ascii=False))
+            return
+        if not results:
+            typer.echo("没有找到相关文章")
+            return
+        for rank, result in enumerate(results, start=1):
+            published = result.published_at or "发布时间未知"
+            topics = "、".join(result.matched_topics) or "—"
+            scores = (
+                f"RRF={result.rrf_score:.6f}"
+                if result.rrf_score is not None
+                else f"来源={'+'.join(result.sources)}"
+            )
+            typer.echo(
+                f"[{rank}] {result.title}  {published}\n"
+                f"    匹配话题：{topics}\n"
+                f"    {result.article_summary}\n"
+                f"    {scores}  article_id={result.article_id}"
+            )
+    except Exception as exc:
+        _abort(exc)
+    finally:
+        if provider is not None:
+            provider.close()
 
 
 @chunks_app.command("export-review")

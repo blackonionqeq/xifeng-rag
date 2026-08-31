@@ -57,6 +57,7 @@ def test_fresh_database_has_article_overviews_and_publication_time(database: Dat
         "model_id",
         "prompt_version",
     } <= overview_columns
+    assert inspector.has_table("article_index_builds")
 
 
 def test_evaluation_curation_migration_preserves_existing_runs(tmp_path: Path) -> None:

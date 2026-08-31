@@ -21,6 +21,7 @@ DeepSeek 结构化回答、稳定原文引用和基础检索评测。正式前�
 - 使用本地 Ollama 和 JSON Schema 生成单层话题块提案；
 - JSON/Markdown 人工审核产物、逐段索引决定和不可变批准清单；
 - 仅根据完整批准分块元数据生成可编辑、可批准的文章整体概括，不重复读取或外发正文；
+- 基于已批准整体概括、话题标题和去重补充关键词的独立文章级 BM25 + Dense + RRF 搜索；
 - 单篇分块重试，可切换本地或显式确认的外部模型并使用一次性自定义 Prompt；
 - 已批准话题块上的中文 BM25、BGE Dense、RRF 混合检索和原文引用；
 - 使用 `BAAI/bge-reranker-v2-m3` 对 Hybrid 宽候选进行显式本地重排；
@@ -81,6 +82,8 @@ uv run xifeng overviews propose
 uv run xifeng overviews list
 uv run xifeng overviews revise-pending --provider deepseek
 uv run xifeng overviews approve <OVERVIEW_ID> --summary-file <PATH>
+uv run xifeng articles build-index
+uv run xifeng articles search "记得的模糊主题" --top-k 5
 uv run xifeng index build
 uv run xifeng index build --profile layered
 uv run xifeng search "要检索的问题" --top-k 5
@@ -115,6 +118,12 @@ uv run xifeng eval run <FROZEN_DATASET_ID> --mode hybrid --rerank --rewrite --k 
 概括优选适合列表扫读的 80 至 140 字，最长不超过 200 字。`overviews revise-pending --provider deepseek`
 可在用户显式触发后批量精简待审概括；它只外发上述派生元数据，不发送正文，不修改已批准
 概括，并保留被替换草稿与生成来源供审计。
+
+`articles build-index` 只消费活动文章版本的已批准整体概括，并构建与证据块索引完全独立的
+本地文章级 BM25、Dense 与 RRF 产物。检索文本由文章标题、整体概括、全部话题标题和去重后
+仍有增量信息的关键词组成，不重复拼入块级概括。`articles search` 返回相关文章列表和匹配
+话题，用于“记得主题但忘了文章”的反查；结果不是原文证据，也不会进入现有 `search` 或
+`ask` 的最终权重。需要证据时再进入现有块级原文检索；按文章范围下钻属于后续入口衔接。
 
 已确认不完整或不应导入的单篇文章可在本地配置的
 `corpus.excluded_article_ids` 中按稳定文章 ID 排除。排除不会修改外部语料；扫描会单独

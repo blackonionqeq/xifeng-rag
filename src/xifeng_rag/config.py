@@ -176,6 +176,10 @@ class Settings(BaseSettings):
         return self.data_dir / "indexes"
 
     @property
+    def article_index_dir(self) -> Path:
+        return self.data_dir / "article_indexes"
+
+    @property
     def review_dir(self) -> Path:
         return self.data_dir / "reviews"
 

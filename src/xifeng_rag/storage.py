@@ -150,6 +150,19 @@ class IndexBuildRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class ArticleIndexBuildRow(Base):
+    __tablename__ = "article_index_builds"
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    profile_id: Mapped[str] = mapped_column(String(96), index=True)
+    corpus_snapshot: Mapped[str] = mapped_column(String(64))
+    path: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(40), index=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    error_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class EvaluationRunRow(Base):
     __tablename__ = "evaluation_runs"
     id: Mapped[str] = mapped_column(String(96), primary_key=True)
