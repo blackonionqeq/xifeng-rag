@@ -106,6 +106,10 @@ query_matches（仅多查询实验）
 组合后进行一次本地重排。改写失败只退回原问题，不切换外部 provider。详细协议见
 [`docs/specs/2026-08-29-conservative-query-rewrite-design.md`](../specs/2026-08-29-conservative-query-rewrite-design.md)。
 
+Reranker 之后可由默认关闭的本地证据评估层观察最终 Top-K 的分数间隔、双路召回一致性和查询
+改写一致性。第一阶段只输出确定性诊断，不判断充分与否，也不触发路由。详细协议见
+[`docs/specs/2026-08-31-evidence-assessment-observation-design.md`](../specs/2026-08-31-evidence-assessment-observation-design.md)。
+
 ## 6. 确定性上下文组装
 
 Reranker 之后由普通 Python `ContextAssembler` 将排序候选转换为结构化证据上下文。默认路径
