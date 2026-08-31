@@ -1,5 +1,10 @@
 # V1 后续待办与新会话交接
 
+> **历史快照：已被取代。** 本文记录 2026-08-28 时的状态，其中 Reranker、上下文组装和
+> DeepSeek Generator 等 P0 项现已完成，不应再作为当前待办执行。当前能力以
+> [README](../../README.md) 为准，后续优先级以[版本路线](../design/roadmap.md)为准；最新的
+> 检索实验结论见[证据充分度观测层设计](../specs/2026-08-31-evidence-assessment-observation-design.md)。
+
 更新时间：2026-08-28（Asia/Shanghai）
 
 ## 一句话状态

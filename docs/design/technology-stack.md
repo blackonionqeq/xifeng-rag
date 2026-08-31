@@ -1,6 +1,6 @@
 # 技术栈设计
 
-状态：技术栈基线 v0.2。
+状态：技术栈基线 v0.3；阶段 1 的 V0 与 V1 单轮问答核心已经实现。
 
 ## 1. 总体选择
 
@@ -35,7 +35,7 @@ RAG 核心、索引、模型调用、评测与 API 使用 Python。前端延后�
 | 向量存储 | Qdrant Client 本地持久化模式 |
 | 关键词检索 | `bm25s` + `jieba` search mode（版本化封装） |
 | 离线语义分块 | Ollama standalone + `qwen3:4b-instruct-2507-q4_K_M` |
-| Embedding | 默认 `Qwen/Qwen3-Embedding-0.6B`；基线 `BAAI/bge-base-zh-v1.5` |
+| Embedding | 当前默认 `BAAI/bge-base-zh-v1.5`；后续对照 `Qwen/Qwen3-Embedding-0.6B` |
 | Reranker | 默认 `BAAI/bge-reranker-v2-m3`；后续对照 `Qwen/Qwen3-Reranker-0.6B` |
 | 上下文组装 | 自有确定性 Python 组件 + 规范 JSON |
 | CLI | Typer |
@@ -67,7 +67,7 @@ V0 已采用 `jieba.Tokenizer` 的独立实例完成本地 search-mode 分词，
 
 ## 4. Generator
 
-第一阶段只实现 DeepSeek API 适配器。模型 ID 必须通过配置指定，并可使用
+第一阶段已经实现 DeepSeek API 适配器。模型 ID 必须通过配置指定，并可使用
 `xifeng generator models` 查询当前账号实际可用的模型；下面的名称是项目目标配置，不作为
 业务代码中的永久常量：
 

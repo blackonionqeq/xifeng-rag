@@ -1,6 +1,6 @@
 # 总体架构设计
 
-状态：设计基线 v0.2；本文只记录已经确认的设计决策。
+状态：设计基线 v0.3；V0 与 V1 单轮问答主链已实现，本文只记录已经确认的设计决策。
 
 ## 1. 项目目标
 
@@ -50,17 +50,22 @@ saved_articles/*.md
   -> 带原文引用的回答
 ```
 
-V0 先以已批准的 AI 话题块完成 BM25、引用和基础评测。V1 再加入 Dense、RRF、本地 Reranker 与 Generator；不提前抽象 HyDE、RAPTOR、压缩与路由等所有可能策略。已确认的保守查询改写实验使用普通、显式的 `QueryRewriter` 接口，详见[查询改写设计](../specs/2026-08-29-conservative-query-rewrite-design.md)。
+V0 已以批准的 AI 话题块完成 BM25、引用和基础评测；V1 已加入 Dense、RRF、本地 Reranker、
+确定性上下文组装与 DeepSeek Generator，形成显式触发的单轮问答主链。当前 V1.x 还实现了
+默认关闭的分层子块检索、保守查询改写和证据观测实验，但不提前抽象 HyDE、RAPTOR、压缩与
+路由等所有可能策略。保守查询改写使用普通、显式的 `QueryRewriter` 接口，详见
+[查询改写设计](../specs/2026-08-29-conservative-query-rewrite-design.md)。
 
 ## 4. 必要扩展边界
 
-只保留五个边界清晰的小接口：
+只为已经出现的变化点保留六个边界清晰的小接口：
 
 ```text
 ChunkStrategy
 EmbeddingTextBuilder
 EmbeddingProvider
 Reranker
+QueryRewriter
 Generator
 ```
 
@@ -68,7 +73,8 @@ Generator
 - `EmbeddingTextBuilder` 决定原文、确定性元数据或模型生成上下文如何组成索引文本。
 - `EmbeddingProvider` 只负责本地文本向量化。
 - `Reranker` 对融合后的候选话题块排序，可关闭或替换模型。
-- `Generator` 根据问题与最终证据生成结构化回答；第一阶段实现 DeepSeek 适配器，本地适配器后续增加。
+- `QueryRewriter` 只根据当前问题生成保守等价改写，可关闭或退回原问题。
+- `Generator` 根据问题与最终证据生成结构化回答；当前实现 DeepSeek 适配器，本地适配器后续增加。
 
 第一版 Generator 输出 `answered`、`partially_answered` 或 `insufficient_evidence`，并把资料明确
 陈述与基于资料的推断分开。每个语料结论段必须绑定本次上下文中的证据 ID；本地程序校验 ID
@@ -77,7 +83,9 @@ Generator
 
 不建设动态插件发现、注册表或复杂依赖注入系统。实现可使用普通 Python 接口和显式配置。
 
-第一阶段构建原文和 AI 上下文化两种索引 profile。语义分块默认只在本地运行；任何本地或外部提案都必须经过相同的本地结构校验和人工批准，话题标题与概括才可用于建库。
+当前已完成原文 BM25、原文 Dense 及分层子块实验 Profile。AI 上下文化索引文本仍是待正式
+benchmark 建立后开展的单变量实验。语义分块默认只在本地运行；任何本地或外部提案都必须
+经过相同的本地结构校验和人工批准，话题标题与概括才可用于建库。
 
 人工审核页是 CLI 启动的单用户本地工具，只绑定回环地址。它可以调整边界、检索辅助字段
 和 `include_in_index`，先保存独立草案，再由用户二次确认批准不可变清单并原子更新活动
