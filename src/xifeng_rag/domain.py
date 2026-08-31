@@ -22,6 +22,14 @@ class ProposalStatus(StrEnum):
     APPROVED = "approved"
 
 
+class OverviewStatus(StrEnum):
+    GENERATING = "generating"
+    PENDING_REVIEW = "pending_review"
+    FAILED = "failed"
+    APPROVED = "approved"
+    SUPERSEDED = "superseded"
+
+
 class ContentRole(StrEnum):
     SUBSTANTIVE = "substantive"
     BOILERPLATE = "boilerplate"
@@ -129,6 +137,12 @@ class GeneratedTopic(BaseModel):
 
 class GeneratedTopicProposal(BaseModel):
     topics: list[GeneratedTopic] = Field(min_length=1, max_length=20)
+
+
+class GeneratedArticleOverview(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    article_summary: str = Field(min_length=1, max_length=2000)
 
 
 class RetrievalScores(BaseModel):

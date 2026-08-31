@@ -166,6 +166,8 @@ def test_dashboard_aggregates_latest_and_indexed_versions(
         "needs_cleanup_review": 0,
         "missing": 0,
         "coverage_percent": 100.0,
+        "approved_overviews": 0,
+        "pending_overviews": 0,
     }
     article = cast(list[dict[str, Any]], payload["articles"])[0]
     assert article["latest_version_id"] == latest_version_id
@@ -173,6 +175,8 @@ def test_dashboard_aggregates_latest_and_indexed_versions(
     assert article["has_pending_update"] is True
     assert article["indexed_chunk_count"] == 1
     assert article["captured_at"] == "2026-08-20T10:00:00"
+    assert article["published_at"] is None
+    assert article["overview"] is None
     assert article["pending_proposals"][0]["proposal_id"] == "proposal_pending"
 
 

@@ -42,6 +42,23 @@ def test_fresh_database_has_chunk_retry_metadata(database: Database) -> None:
     assert {"provider_id", "prompt_text", "prompt_hash", "retry_id"} <= columns
 
 
+def test_fresh_database_has_article_overviews_and_publication_time(database: Database) -> None:
+    inspector = inspect(database.engine)
+    article_columns = {item["name"] for item in inspector.get_columns("articles")}
+    overview_columns = {item["name"] for item in inspector.get_columns("article_overviews")}
+    assert "published_at" in article_columns
+    assert {
+        "version_id",
+        "proposal_id",
+        "manifest_id",
+        "article_summary",
+        "status",
+        "provider_id",
+        "model_id",
+        "prompt_version",
+    } <= overview_columns
+
+
 def test_evaluation_curation_migration_preserves_existing_runs(tmp_path: Path) -> None:
     path = tmp_path / "evaluation-legacy.sqlite3"
     connection = sqlite3.connect(path)

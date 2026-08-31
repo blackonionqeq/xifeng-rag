@@ -11,6 +11,7 @@ from xifeng_rag.corpus import (
     clean_markdown,
     discover_markdown,
     load_external_article_ids,
+    load_html_published_at,
     scan_corpus,
 )
 from xifeng_rag.domain import VersionStatus
@@ -115,6 +116,26 @@ def test_load_external_article_ids_from_source_parent(tmp_path: Path) -> None:
     assert load_external_article_ids(corpus) == {"example.md": "sn:abc123"}
 
 
+def test_load_html_published_at_prefers_original_epoch(tmp_path: Path) -> None:
+    source = tmp_path / "example.html"
+    source.write_text(
+        "create_time: '2026-06-04 11:26', ori_create_time: '1780543678' * 1",
+        encoding="utf-8",
+    )
+    published = load_html_published_at(source)
+    assert published is not None
+    assert published.isoformat() == "2026-06-04T11:27:58"
+
+
+def test_load_html_published_at_falls_back_to_readable_time(tmp_path: Path) -> None:
+    source = tmp_path / "example.html"
+    source.write_text("create_time: '2026-06-04 11:27'", encoding="utf-8")
+    published = load_html_published_at(source)
+    assert published is not None
+    assert published.isoformat() == "2026-06-04T11:27:00"
+    assert load_html_published_at(tmp_path / "missing.html") is None
+
+
 def test_scan_updates_source_metadata_without_creating_new_version(
     database: Database, tmp_path: Path
 ) -> None:
@@ -122,6 +143,9 @@ def test_scan_updates_source_metadata_without_creating_new_version(
     corpus.mkdir()
     source = corpus / "example.md"
     source.write_text("# 示例\n\n自造正文。", encoding="utf-8")
+    (corpus / "example.html").write_text(
+        "ori_create_time: '1780543678' * 1", encoding="utf-8"
+    )
     catalog = tmp_path / "index.json"
     metadata = {
         "sn:metadata": {
@@ -139,6 +163,8 @@ def test_scan_updates_source_metadata_without_creating_new_version(
         assert article is not None
         assert article.captured_at is not None
         assert article.captured_at.isoformat() == "2026-08-20T12:30:00"
+        assert article.published_at is not None
+        assert article.published_at.isoformat() == "2026-06-04T11:27:58"
         assert article.source_modified_at is not None
         assert article.source_size_bytes == source.stat().st_size
         assert article.source_character_count == 123

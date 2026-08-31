@@ -37,6 +37,8 @@ function renderStats() {
     [state.stats.indexed, "已索引"],
     [state.stats.pending, "待处理"],
     [state.stats.needs_cleanup_review, "待清洗审核"],
+    [state.stats.approved_overviews, "概括已批准"],
+    [state.stats.pending_overviews, "概括待审核"],
     [`${state.stats.coverage_percent}%`, "索引覆盖率"],
   ];
   const container = document.getElementById("stats");
@@ -56,7 +58,8 @@ function matchesFilters(article) {
   const query = document.getElementById("search-input").value.trim().toLocaleLowerCase();
   const status = document.getElementById("status-filter").value;
   const index = document.getElementById("index-filter").value;
-  if (query && !`${article.title} ${article.article_id}`.toLocaleLowerCase().includes(query)) return false;
+  const summary = article.overview ? article.overview.article_summary : "";
+  if (query && !`${article.title} ${article.article_id} ${summary}`.toLocaleLowerCase().includes(query)) return false;
   if (status && article.latest_status !== status) return false;
   if (index === "indexed" && !article.is_indexed) return false;
   if (index === "unindexed" && article.is_indexed) return false;
@@ -150,6 +153,54 @@ function reviewAction(article) {
   return wrapper;
 }
 
+async function approveOverview(article, textarea, button) {
+  const status = document.getElementById("operation-status");
+  button.disabled = true;
+  try {
+    const response = await request("/api/overviews/approve", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        overview_id: article.overview.overview_id,
+        article_summary: textarea.value,
+      }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "文章概括批准失败");
+    status.textContent = `${payload.message}：${article.title}`;
+    await loadArticles();
+  } catch (error) {
+    status.textContent = error.message;
+    button.disabled = false;
+  }
+}
+
+function overviewCell(article) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "overview-cell";
+  if (!article.overview) {
+    wrapper.classList.add("muted");
+    wrapper.textContent = "尚未生成";
+    return wrapper;
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = article.overview.article_summary;
+  textarea.readOnly = article.overview.status === "approved";
+  textarea.setAttribute("aria-label", `${article.title}的文章概括`);
+  const meta = document.createElement("small");
+  meta.textContent = `${article.overview.status === "approved" ? "已批准" : "待审核"} · ${article.overview.provider_id}/${article.overview.model_id}`;
+  wrapper.append(textarea, meta);
+  if (article.overview.status === "pending_review") {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "small";
+    button.textContent = "批准概括";
+    button.addEventListener("click", () => approveOverview(article, textarea, button));
+    wrapper.append(button);
+  }
+  return wrapper;
+}
+
 function renderRows() {
   const rows = document.getElementById("article-rows");
   rows.replaceChildren();
@@ -161,7 +212,11 @@ function renderRows() {
     title.querySelector("strong").textContent = article.title;
     title.querySelector("small").textContent = article.article_id;
     const captured = document.createElement("td");
-    captured.textContent = formatTime(article.captured_at);
+    const published = document.createElement("span");
+    published.textContent = `发布 ${formatTime(article.published_at)}`;
+    const capturedTime = document.createElement("span");
+    capturedTime.textContent = `抓取 ${formatTime(article.captured_at)}`;
+    captured.append(published, capturedTime);
     const modified = document.createElement("td");
     modified.textContent = formatTime(article.source_modified_at);
     const status = document.createElement("td");
@@ -179,9 +234,11 @@ function renderRows() {
     indexedVersion.title = article.indexed_version_id || "";
     indexedVersion.textContent = `索引 ${shortId(article.indexed_version_id)}`;
     versions.append(latestVersion, indexedVersion);
+    const overview = document.createElement("td");
+    overview.append(overviewCell(article));
     const action = document.createElement("td");
     action.append(reviewAction(article));
-    row.append(title, captured, modified, status, proposals, chunks, versions, action);
+    row.append(title, captured, modified, status, proposals, chunks, versions, overview, action);
     rows.append(row);
   });
   document.getElementById("empty-state").hidden = filtered.length > 0;

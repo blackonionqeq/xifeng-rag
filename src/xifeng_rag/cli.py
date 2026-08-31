@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
@@ -13,6 +14,10 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from xifeng_rag import __version__
+from xifeng_rag.article_overviews import (
+    approve_article_overview,
+    propose_article_overview,
+)
 from xifeng_rag.chunking import (
     CodexCliClient,
     OllamaClient,
@@ -75,6 +80,8 @@ from xifeng_rag.query_rewrite import (
 from xifeng_rag.reranking import SentenceTransformersReranker
 from xifeng_rag.review_ui import IndexBuilder, run_review_server
 from xifeng_rag.storage import (
+    ApprovedManifestRow,
+    ArticleOverviewRow,
     ArticleRow,
     ArticleVersionRow,
     ChunkProposalRow,
@@ -89,11 +96,13 @@ chunks_app = typer.Typer(help="话题分块与审核")
 index_app = typer.Typer(help="BM25 索引")
 eval_app = typer.Typer(help="检索评测")
 generator_app = typer.Typer(help="外部回答 Generator 诊断")
+overviews_app = typer.Typer(help="文章整体概括生成与审核")
 app.add_typer(corpus_app, name="corpus")
 app.add_typer(chunks_app, name="chunks")
 app.add_typer(index_app, name="index")
 app.add_typer(eval_app, name="eval")
 app.add_typer(generator_app, name="generator")
+app.add_typer(overviews_app, name="overviews")
 
 
 @dataclass
@@ -747,6 +756,122 @@ def chunks_list(ctx: typer.Context) -> None:
                     f"  {proposal.id}  {proposal.status:16}  "
                     f"{proposal.provider_id}/{proposal.model_id}  {proposal.prompt_version}"
                 )
+
+
+@overviews_app.command("propose")
+def overviews_propose(
+    ctx: typer.Context,
+    article_ids: Annotated[list[str] | None, typer.Argument(help="可选文章 ID 列表")] = None,
+) -> None:
+    """仅根据已批准的完整分块元数据，使用本地 Ollama 生成文章概括草稿。"""
+    runtime = _runtime(ctx)
+    client = OllamaClient(runtime.settings.ollama)
+    process = None
+    try:
+        with runtime.database.session() as session:
+            statement = (
+                select(ArticleVersionRow)
+                .join(
+                    ApprovedManifestRow,
+                    ApprovedManifestRow.version_id == ArticleVersionRow.id,
+                )
+                .where(ArticleVersionRow.active.is_(True))
+            )
+            if article_ids:
+                statement = statement.where(ArticleVersionRow.article_id.in_(article_ids))
+            versions = list(
+                session.scalars(
+                    statement.order_by(
+                        ArticleVersionRow.article_id,
+                        ArticleVersionRow.created_at.desc(),
+                    )
+                ).all()
+            )
+            selected: dict[str, str] = {}
+            for version in versions:
+                selected.setdefault(version.article_id, version.id)
+            version_ids = list(selected.values())
+        if not version_ids:
+            raise ValueError("没有带批准分块清单的活动文章版本")
+        process = client.start_server()
+        models = client.installed_models()
+        if not any(item.split(":latest")[0] == runtime.settings.ollama.model for item in models):
+            raise RuntimeError(f"模型未安装：{runtime.settings.ollama.model}；请先执行 ollama pull")
+        failed = False
+        for version_id in version_ids:
+            try:
+                with runtime.database.session() as session:
+                    row = propose_article_overview(
+                        session,
+                        version_id,
+                        client,
+                        runtime.settings.ollama.model,
+                        provider_id="ollama",
+                    )
+                    version = session.get(ArticleVersionRow, version_id)
+                    if version is None:
+                        raise RuntimeError(f"文章版本已消失：{version_id}")
+                    article = session.get(ArticleRow, version.article_id)
+                    title = article.title if article is not None else version_id
+                typer.echo(f"{row.id}  {row.status}  {title}")
+                failed = failed or row.status == "failed"
+            except Exception as exc:
+                failed = True
+                typer.echo(f"{version_id}  failed  {type(exc).__name__}: {exc}", err=True)
+        if failed:
+            raise RuntimeError("部分文章概括生成失败")
+    except Exception as exc:
+        _abort(exc)
+    finally:
+        if process is not None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+
+
+@overviews_app.command("list")
+def overviews_list(ctx: typer.Context) -> None:
+    """列出文章概括草稿与批准状态。"""
+    runtime = _runtime(ctx)
+    with runtime.database.session() as session:
+        rows = session.execute(
+            select(ArticleOverviewRow, ArticleVersionRow, ArticleRow)
+            .join(ArticleVersionRow, ArticleOverviewRow.version_id == ArticleVersionRow.id)
+            .join(ArticleRow, ArticleVersionRow.article_id == ArticleRow.id)
+            .order_by(ArticleOverviewRow.created_at.desc())
+        ).all()
+        if not rows:
+            typer.echo("尚无文章概括")
+            return
+        for overview, version, article in rows:
+            typer.echo(
+                f"{overview.id}  {overview.status:15}  {article.title}\n"
+                f"  {version.id}  {overview.provider_id}/{overview.model_id}\n"
+                f"  {overview.article_summary}"
+            )
+
+
+@overviews_app.command("approve")
+def overviews_approve(
+    ctx: typer.Context,
+    overview_id: Annotated[str, typer.Argument(help="文章概括 ID")],
+    summary_file: Annotated[
+        Path | None, typer.Option("--summary-file", help="可选的人工修改后纯文本文件")
+    ] = None,
+) -> None:
+    """批准文章概括；可在批准时用本地文本文件替换模型草稿。"""
+    runtime = _runtime(ctx)
+    try:
+        summary = None
+        if summary_file is not None:
+            summary = summary_file.resolve().read_text(encoding="utf-8").strip()
+        with runtime.database.session() as session:
+            row = approve_article_overview(session, overview_id, summary)
+        typer.echo(f"已批准文章概括：{row.id}")
+    except Exception as exc:
+        _abort(exc)
 
 
 @chunks_app.command("export-review")

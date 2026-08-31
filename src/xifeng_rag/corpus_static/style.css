@@ -36,7 +36,7 @@ button.secondary { color: #69462d; background: #eee5da; }
 button.quiet { color: #5d625e; background: #e6e4de; }
 button.small { padding: .38rem .6rem; white-space: nowrap; }
 main { padding: 1rem 2rem 2rem; }
-.stats { display: grid; grid-template-columns: repeat(5, minmax(8rem, 1fr)); gap: .75rem; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr)); gap: .75rem; }
 .stat-card { padding: 1rem; background: white; border: 1px solid #ddd8cd; border-radius: .65rem; }
 .stat-card strong { display: block; font-size: 1.5rem; }
 .stat-card span { color: #707570; font-size: .8rem; }
@@ -60,6 +60,14 @@ input, select {
   color: #242925;
   background: #fff;
 }
+textarea {
+  width: 100%; min-height: 7rem; padding: .5rem; resize: vertical;
+  border: 1px solid #c8c4ba; border-radius: .35rem; font: inherit; line-height: 1.5;
+}
+td:nth-child(2) span { display: block; white-space: nowrap; }
+.overview-cell { min-width: 24rem; }
+.overview-cell small { margin: .35rem 0; font-family: inherit; }
+.overview-cell button { margin-top: .35rem; }
 .table-shell { overflow-x: auto; background: white; border: 1px solid #ddd8cd; border-radius: .65rem; }
 table { width: 100%; border-collapse: collapse; font-size: .84rem; }
 th { position: sticky; top: 0; text-align: left; color: #646a65; background: #f6f3ed; }

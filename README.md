@@ -17,8 +17,10 @@ DeepSeek 结构化回答、稳定原文引用和基础检索评测。正式前�
 - 确定性清洗、物理行/句末原子单元、链接锚文本保留、精确源位置映射和内容哈希；
 - 新增、修改、未变化与缺失文章分类；
 - 本地语料管理页，展示来源时间、分块与索引进度，并显式扫描更新；
+- 从配套 HTML 只读取微信原始发布时间元数据，与本地抓取时间分字段保存；
 - 使用本地 Ollama 和 JSON Schema 生成单层话题块提案；
 - JSON/Markdown 人工审核产物、逐段索引决定和不可变批准清单；
+- 仅根据完整批准分块元数据生成可编辑、可批准的文章整体概括，不重复读取或外发正文；
 - 单篇分块重试，可切换本地或显式确认的外部模型并使用一次性自定义 Prompt；
 - 已批准话题块上的中文 BM25、BGE Dense、RRF 混合检索和原文引用；
 - 使用 `BAAI/bge-reranker-v2-m3` 对 Hybrid 宽候选进行显式本地重排；
@@ -75,6 +77,9 @@ uv run xifeng chunks export-review <ARTICLE_VERSION> --proposal <PROPOSAL_ID>
 uv run xifeng chunks review <ARTICLE_VERSION> --proposal <PROPOSAL_ID>
 # 阅读并按需修改 data/reviews/*.review.json
 uv run xifeng chunks approve data/reviews/<ARTICLE_VERSION>.review.json
+uv run xifeng overviews propose
+uv run xifeng overviews list
+uv run xifeng overviews approve <OVERVIEW_ID> --summary-file <PATH>
 uv run xifeng index build
 uv run xifeng index build --profile layered
 uv run xifeng search "要检索的问题" --top-k 5
@@ -99,9 +104,13 @@ uv run xifeng eval run <FROZEN_DATASET_ID> --mode hybrid --rerank --rewrite --k 
 `corpus resolve-cleanup` 人工裁决。只有已批准版本能够进入索引。
 
 `corpus manage` 在随机端口启动只绑定 `127.0.0.1` 的本地语料管理页。页面按文章聚合展示
-抓取时间、文件修改时间、最新来源版本、当前索引版本、待审提案和索引块数量；“扫描语料
+原始发布时间、抓取时间、文件修改时间、最新来源版本、当前索引版本、待审提案和索引块数量；“扫描语料
 更新”按钮复用相同的增量扫描流程。存在待审提案时可从表格打开现有审核页。管理页不会
 自动生成分块提案，也不会绕过单篇外发确认。
+
+`overviews propose` 只处理带完整批准清单的活动文章，输入为标题、全部批准话题标题、块级
+概括、关键词和索引决定，不包含 `original_text`。命令按需启动本地 Ollama，生成结束后关闭
+本次启动的服务。草稿可在语料管理页编辑并批准；未批准概括不会进入后续文章级索引。
 
 已确认不完整或不应导入的单篇文章可在本地配置的
 `corpus.excluded_article_ids` 中按稳定文章 ID 排除。排除不会修改外部语料；扫描会单独
@@ -205,6 +214,7 @@ DeepSeek 模型 ID 可能随账号与服务版本变化。先运行 `generator m
 - [分层子块检索与相邻上下文设计](docs/specs/2026-08-29-layered-child-retrieval-design.md)
 - [保守查询改写与多查询融合设计](docs/specs/2026-08-29-conservative-query-rewrite-design.md)
 - [证据充分度观测层设计](docs/specs/2026-08-31-evidence-assessment-observation-design.md)
+- [文章概括与文章级搜索设计](docs/specs/2026-08-31-article-overview-search-design.md)
 - [评测问题编写与 AI 草案审核指南](docs/guides/evaluation-question-writing.md)
 - [Agent 工作约束](AGENTS.md)
 

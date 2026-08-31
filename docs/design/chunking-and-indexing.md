@@ -148,6 +148,13 @@ keywords
 original_text
 ```
 
+文章还分别保存微信原始 `published_at` 与本地 `captured_at`。前者从配套 HTML 的
+`ori_create_time` 确定性读取，HTML 正文不进入索引；后者用于同步审计，不能冒充发布时间。
+
+文章整体概括使用独立的 `ArticleOverview` 审核记录，不修改不可变批准清单。已有文章的草稿
+输入为批准清单中的全部话题元数据，包括 `include_in_index=false` 的话题，不读取
+`TopicChunk.original_text`。概括用于文章发现和回顾，不能作为作者原话或回答引用。
+
 其中精确发布时间主要作为结构化元数据，用于过滤、排序和时间分析。只有时间对语义理解有实际帮助时，才将自然语言形式的时间背景加入 Embedding 文本，避免每个块重复精确日期造成噪声。
 
 第一阶段至少保留两个可对照的 `EmbeddingTextBuilder`：

@@ -12,10 +12,12 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlsplit
 
+from pydantic import ValidationError
 from sqlalchemy import func, select
 
+from xifeng_rag.article_overviews import approve_article_overview
 from xifeng_rag.corpus import discover_markdown, scan_corpus
-from xifeng_rag.domain import ProposalStatus, VersionStatus
+from xifeng_rag.domain import OverviewStatus, ProposalStatus, VersionStatus
 from xifeng_rag.review_ui import (
     IndexBuilder,
     ReviewApplication,
@@ -23,6 +25,7 @@ from xifeng_rag.review_ui import (
     create_review_server,
 )
 from xifeng_rag.storage import (
+    ArticleOverviewRow,
     ArticleRow,
     ArticleVersionRow,
     ChunkProposalRow,
@@ -124,6 +127,29 @@ class CorpusDashboardApplication:
                     .group_by(TopicChunkRow.version_id)
                 ).all()
             }
+            relevant_version_ids = list({*latest_ids, *indexed_ids})
+            overview_rows = (
+                list(
+                    session.scalars(
+                        select(ArticleOverviewRow)
+                        .where(
+                            ArticleOverviewRow.version_id.in_(relevant_version_ids),
+                            ArticleOverviewRow.status.in_(
+                                [
+                                    OverviewStatus.PENDING_REVIEW.value,
+                                    OverviewStatus.APPROVED.value,
+                                ]
+                            ),
+                        )
+                        .order_by(ArticleOverviewRow.created_at.desc())
+                    ).all()
+                )
+                if relevant_version_ids
+                else []
+            )
+            overviews_by_version: dict[str, ArticleOverviewRow] = {}
+            for overview in overview_rows:
+                overviews_by_version.setdefault(overview.version_id, overview)
 
         items: list[dict[str, object]] = []
         for article in article_rows:
@@ -142,6 +168,13 @@ class CorpusDashboardApplication:
                 else []
             )
             indexed_chunk_count = chunk_counts.get(indexed.id, 0) if indexed is not None else 0
+            overview = (
+                overviews_by_version.get(latest.id)
+                if latest is not None
+                else None
+            ) or (
+                overviews_by_version.get(indexed.id) if indexed is not None else None
+            )
             items.append(
                 {
                     "article_id": article.id,
@@ -149,6 +182,7 @@ class CorpusDashboardApplication:
                     "source_path": article.source_path,
                     "source_active": article.active,
                     "captured_at": _isoformat(article.captured_at),
+                    "published_at": _isoformat(article.published_at),
                     "source_modified_at": _isoformat(article.source_modified_at),
                     "source_size_bytes": article.source_size_bytes,
                     "source_character_count": article.source_character_count,
@@ -172,6 +206,18 @@ class CorpusDashboardApplication:
                         indexed is not None and latest is not None and indexed.id != latest.id
                     ),
                     "is_indexed": indexed is not None and indexed_chunk_count > 0,
+                    "overview": (
+                        {
+                            "overview_id": overview.id,
+                            "version_id": overview.version_id,
+                            "article_summary": overview.article_summary,
+                            "status": overview.status,
+                            "provider_id": overview.provider_id,
+                            "model_id": overview.model_id,
+                        }
+                        if overview is not None
+                        else None
+                    ),
                 }
             )
 
@@ -190,6 +236,11 @@ class CorpusDashboardApplication:
             )
             for item in items
         )
+        overview_statuses = [
+            overview.get("status")
+            for item in items
+            if isinstance((overview := item.get("overview")), dict)
+        ]
         return {
             "articles": items,
             "stats": {
@@ -206,8 +257,27 @@ class CorpusDashboardApplication:
                 "coverage_percent": (
                     round(indexed_count * 100 / active_count, 1) if active_count else 0.0
                 ),
+                "approved_overviews": overview_statuses.count(OverviewStatus.APPROVED.value),
+                "pending_overviews": overview_statuses.count(
+                    OverviewStatus.PENDING_REVIEW.value
+                ),
             },
         }
+
+    def approve_overview(self, body: object) -> dict[str, object]:
+        if not isinstance(body, dict):
+            raise ValueError("请求必须是对象")
+        overview_id = body.get("overview_id")
+        article_summary = body.get("article_summary")
+        if not isinstance(overview_id, str) or not isinstance(article_summary, str):
+            raise ValueError("必须提供文章概括 ID 和概括文本")
+        with self.database.session() as session:
+            row = approve_article_overview(session, overview_id, article_summary)
+            return {
+                "message": "文章概括已批准",
+                "overview_id": row.id,
+                "status": row.status,
+            }
 
     def scan(self) -> dict[str, object]:
         if not self._scan_lock.acquire(blocking=False):
@@ -357,7 +427,12 @@ def _handler_for(
 
         def do_POST(self) -> None:
             parsed = urlsplit(self.path)
-            if parsed.path not in {"/api/scan", "/api/reviews", "/api/shutdown"}:
+            if parsed.path not in {
+                "/api/scan",
+                "/api/reviews",
+                "/api/overviews/approve",
+                "/api/shutdown",
+            }:
                 self._json_error(HTTPStatus.NOT_FOUND, "接口不存在")
                 return
             if not self._token_valid(parsed.query):
@@ -386,6 +461,14 @@ def _handler_for(
                 try:
                     result = application.start_review(body)
                 except ValueError as exc:
+                    self._json_error(HTTPStatus.CONFLICT, str(exc))
+                    return
+                self._json_response(HTTPStatus.OK, result)
+                return
+            if parsed.path == "/api/overviews/approve":
+                try:
+                    result = application.approve_overview(body)
+                except (ValueError, ValidationError) as exc:
                     self._json_error(HTTPStatus.CONFLICT, str(exc))
                     return
                 self._json_response(HTTPStatus.OK, result)

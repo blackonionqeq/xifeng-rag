@@ -4,7 +4,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 from sqlalchemy import select, update
@@ -74,6 +74,7 @@ class _RawParagraph:
 class ExternalArticleMetadata:
     article_id: str
     captured_at: datetime | None = None
+    published_at: datetime | None = None
     character_count: int | None = None
 
 
@@ -84,6 +85,13 @@ MARKDOWN_HEADING_LINE = re.compile(r"^\s{0,3}#{1,6}\s+")
 # ASCII ``?``, ``!`` and ``;`` are valid inside URL paths and queries, so they
 # stay in the protected match. Chinese sentence terminators remain outside it.
 BARE_URL_PATTERN = re.compile(r"https?://[^\s\])}>。！？；]+", re.IGNORECASE)
+ORIGINAL_PUBLISH_EPOCH_PATTERN = re.compile(
+    r"\bori_create_time\s*:\s*['\"]?(\d{10})['\"]?"
+)
+PUBLISH_TEXT_PATTERN = re.compile(
+    r"(?<!ori_)\bcreate_time\s*:\s*['\"](\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}(?::\d{2})?)['\"]"
+)
+CHINA_STANDARD_TIME = timezone(timedelta(hours=8))
 
 
 def _raw_lines(markdown: str) -> list[_RawParagraph]:
@@ -243,6 +251,24 @@ def _optional_datetime(value: object) -> datetime | None:
     return parsed
 
 
+def load_html_published_at(path: Path) -> datetime | None:
+    """Read publication metadata from the matching HTML without indexing its body."""
+    if not path.is_file():
+        return None
+    html = path.read_text(encoding="utf-8-sig", errors="replace")
+    epoch_match = ORIGINAL_PUBLISH_EPOCH_PATTERN.search(html)
+    if epoch_match is not None:
+        return (
+            datetime.fromtimestamp(int(epoch_match.group(1)), UTC)
+            .astimezone(CHINA_STANDARD_TIME)
+            .replace(tzinfo=None)
+        )
+    text_match = PUBLISH_TEXT_PATTERN.search(html)
+    if text_match is None:
+        return None
+    return datetime.fromisoformat(text_match.group(1))
+
+
 def load_external_article_metadata(
     source_dir: Path,
 ) -> dict[str, ExternalArticleMetadata]:
@@ -268,6 +294,7 @@ def load_external_article_metadata(
         mapping[filename] = ExternalArticleMetadata(
             article_id=key,
             captured_at=_optional_datetime(metadata.get("captured_at")),
+            published_at=load_html_published_at(source_dir / Path(filename).with_suffix(".html")),
             character_count=(
                 character_count
                 if isinstance(character_count, int) and not isinstance(character_count, bool)
@@ -340,6 +367,7 @@ def scan_corpus(
                 title=extract_title(markdown, path.stem),
                 active=True,
                 captured_at=metadata.captured_at if metadata is not None else None,
+                published_at=metadata.published_at if metadata is not None else None,
                 source_modified_at=source_modified_at,
                 source_size_bytes=source_stat.st_size,
                 source_character_count=(metadata.character_count if metadata is not None else None),
@@ -350,6 +378,8 @@ def scan_corpus(
         else:
             metadata_changed = (
                 article.captured_at != (metadata.captured_at if metadata is not None else None)
+                or article.published_at
+                != (metadata.published_at if metadata is not None else None)
                 or article.source_modified_at != source_modified_at
                 or article.source_size_bytes != source_stat.st_size
                 or article.source_character_count
@@ -358,6 +388,7 @@ def scan_corpus(
             article.active = True
             article.title = extract_title(markdown, path.stem)
             article.captured_at = metadata.captured_at if metadata is not None else None
+            article.published_at = metadata.published_at if metadata is not None else None
             article.source_modified_at = source_modified_at
             article.source_size_bytes = source_stat.st_size
             article.source_character_count = (

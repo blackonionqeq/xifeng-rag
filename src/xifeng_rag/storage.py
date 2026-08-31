@@ -37,6 +37,7 @@ class ArticleRow(Base):
     title: Mapped[str] = mapped_column(Text)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     captured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     source_modified_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -114,6 +115,26 @@ class TopicChunkRow(Base):
     context_summary: Mapped[str] = mapped_column(Text)
     keywords_json: Mapped[str] = mapped_column(Text)
     original_text: Mapped[str] = mapped_column(Text)
+
+
+class ArticleOverviewRow(Base):
+    __tablename__ = "article_overviews"
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    version_id: Mapped[str] = mapped_column(ForeignKey("article_versions.id"), index=True)
+    proposal_id: Mapped[str | None] = mapped_column(
+        ForeignKey("chunk_proposals.id"), nullable=True, index=True
+    )
+    manifest_id: Mapped[str | None] = mapped_column(
+        ForeignKey("approved_manifests.id"), nullable=True, index=True
+    )
+    article_summary: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(40), index=True)
+    provider_id: Mapped[str] = mapped_column(Text)
+    model_id: Mapped[str] = mapped_column(Text)
+    prompt_version: Mapped[str] = mapped_column(String(40))
+    generation_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class IndexBuildRow(Base):
