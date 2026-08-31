@@ -135,6 +135,7 @@ def test_semantic_prompt_allows_one_topic_without_size_warnings(
         assert "显式篇章结构的优先级高于局部语义变化" in prompt
         assert "案例、类比、数据、原因、推导、细节和过渡" in prompt
         assert "当前只做单层顶层分块" in prompt
+        assert "文末文章目录" in prompt
         assert "是否进入索引由用户审核决定" in prompt
         assert "不要输出内容角色" in prompt
         assert "4–6" not in prompt
@@ -142,6 +143,60 @@ def test_semantic_prompt_allows_one_topic_without_size_warnings(
         assert row is not None
         normalized = TopicProposal.model_validate_json(row.topics_json)
         assert proposal_warnings(normalized, paragraphs) == []
+
+
+def test_propose_blocks_residual_trailing_catalog_before_generator_call(
+    database: Database, tmp_path: Path
+) -> None:
+    detached = _pending_version(database, tmp_path)
+    with database.session() as session:
+        version = session.get(ArticleVersionRow, detached.id)
+        assert version is not None
+        paragraphs = list(
+            session.scalars(
+                select(ParagraphRow)
+                .where(ParagraphRow.version_id == version.id)
+                .order_by(ParagraphRow.number)
+            ).all()
+        )
+        cursor = paragraphs[-1].source_end + 2
+        marker = ParagraphRow(
+            version_id=version.id,
+            number=6,
+            text="这是所有的付费文章链接：",
+            source_start=cursor,
+            source_end=cursor + 12,
+        )
+        session.add(marker)
+        cursor = marker.source_end + 2
+        links = []
+        for number in range(7, 12):
+            unit = ParagraphRow(
+                version_id=version.id,
+                number=number,
+                text=f"自造目录文章{number}",
+                source_start=cursor,
+                source_end=cursor + 10,
+            )
+            session.add(unit)
+            links.append(
+                {
+                    "anchor": unit.text,
+                    "url": f"https://example.test/{number}",
+                    "source_start": cursor,
+                    "source_end": cursor + 10,
+                }
+            )
+            cursor += 12
+        version.links_json = json.dumps(links, ensure_ascii=False)
+
+    fake = FakeGenerator([])
+    with database.session() as session:
+        version = session.get(ArticleVersionRow, detached.id)
+        assert version is not None
+        with pytest.raises(ValueError, match="残留付费文章目录"):
+            propose_chunks(session, version, fake, "fake-model", 0)
+        assert fake.calls == 0
 
 
 def test_propose_export_edit_and_approve(database: Database, tmp_path: Path) -> None:

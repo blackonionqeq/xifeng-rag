@@ -23,7 +23,10 @@ from pathlib import Path
 def _connect(db_path: Path) -> sqlite3.Connection:
     if not db_path.is_file():
         print(f"错误：数据库不存在：{db_path}", file=sys.stderr)
-        print("请先在项目根目录运行 `uv run xifeng corpus scan`，或用 --db 指定路径。", file=sys.stderr)
+        print(
+            "请先在项目根目录运行 `uv run xifeng corpus scan`，或用 --db 指定路径。",
+            file=sys.stderr,
+        )
         raise SystemExit(1)
     return sqlite3.connect(db_path)
 
@@ -51,7 +54,10 @@ def _match_article(conn: sqlite3.Connection, query: str) -> tuple[str, str]:
     if len(partial) == 1:
         return partial[0]
     if len(partial) > 1:
-        print(f"错误：匹配到 {len(partial)} 篇文章，请用更完整的标题或 sn: 文章 ID：", file=sys.stderr)
+        print(
+            f"错误：匹配到 {len(partial)} 篇文章，请用更完整的标题或 sn: 文章 ID：",
+            file=sys.stderr,
+        )
         for article_id, title in partial:
             print(f"  {article_id}  {title}", file=sys.stderr)
         raise SystemExit(2)

@@ -69,6 +69,7 @@ DEEPSEEK_API_KEY=your-key-here
 ```powershell
 uv run xifeng doctor
 uv run xifeng corpus manage
+uv run xifeng corpus cleanup-dry-run
 uv run xifeng corpus scan
 uv run xifeng chunks list
 uv run xifeng chunks propose <ARTICLE_ID>
@@ -106,6 +107,11 @@ uv run xifeng eval run <FROZEN_DATASET_ID> --mode hybrid --rerank --rewrite --k 
 首次导入前，`corpus scan` 会显示解析后的绝对语料路径和发现的文章数。清洗存在
 歧义的文章会停在 `needs_cleanup_review`，必须通过
 `corpus resolve-cleanup` 人工裁决。只有已批准版本能够进入索引。
+
+清洗规则升级后可先运行 `corpus cleanup-dry-run`。它只读比较活动版本与当前规则的尾部目录
+判断，输出文章标题、截断位置、字符数和链接计数，不显示正文或 URL，也不修改外部语料和
+业务数据。文末付费文章目录只有在明确目录语义、尾部链接密度和连续性同时满足时才自动移除；
+信号冲突会进入清洗审核。分块前还会再次检查旧规范版本中的目录残留，命中时拒绝调用模型。
 
 `corpus manage` 在随机端口启动只绑定 `127.0.0.1` 的本地语料管理页。页面按文章聚合展示
 原始发布时间、抓取时间、文件修改时间、最新来源版本、当前索引版本、待审提案和索引块数量；“扫描语料

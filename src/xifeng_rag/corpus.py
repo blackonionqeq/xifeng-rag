@@ -11,14 +11,28 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from xifeng_rag.domain import ParagraphData, VersionStatus
-from xifeng_rag.storage import ArticleRow, ArticleVersionRow, ParagraphRow, utcnow
+from xifeng_rag.storage import (
+    ApprovedManifestRow,
+    ArticleRow,
+    ArticleVersionRow,
+    ParagraphRow,
+    utcnow,
+)
 
-CLEANER_VERSION = "deterministic-v2-semantic-units"
+CLEANER_VERSION = "deterministic-v4-trailing-catalog-backtrack"
 LINK_PATTERN = re.compile(r"\[([^\]]+)\]\(([^)\s]+)(?:\s+['\"][^'\"]*['\"])?\)")
+DETECTION_LINK_PATTERN = re.compile(r"\[[^\]]*\]\([^)]+\)")
 TRAILING_MARKER_PATTERN = re.compile(
     r"(付费文章.{0,12}(目录|合集)|文章目录|备用号|公众号|扫码|二维码|往期.{0,6}文章)",
     re.IGNORECASE,
 )
+EXPLICIT_CATALOG_PATTERN = re.compile(
+    r"((全部|所有)(的)?付费(文章|文)(链接)?|"
+    r"付费(文章|文)(链接)?(在哪|目录|合集)|"
+    r"付费(文章|文).{0,16}(目录|合集))",
+    re.IGNORECASE,
+)
+MARKDOWN_DECORATION_PATTERN = re.compile(r"[*_~`#]+")
 HEADING_PATTERN = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*$", re.MULTILINE)
 
 
@@ -47,6 +61,17 @@ class CleanupResult:
     removed_ranges: list[tuple[int, int]]
     warnings: list[str]
     needs_review: bool
+
+
+@dataclass(frozen=True)
+class TrailingCatalogAnalysis:
+    status: str
+    source_start: int | None
+    source_end: int | None
+    line_number: int | None
+    link_count: int
+    linked_lines: int
+    reason: str | None
 
 
 @dataclass(frozen=True)
@@ -168,28 +193,128 @@ def _replace_links(text: str, source_offset: int) -> tuple[str, list[MarkdownLin
     return LINK_PATTERN.sub(replace, text), links
 
 
+def _catalog_detection_text(text: str) -> str:
+    value = MARKDOWN_DECORATION_PATTERN.sub("", text)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def is_explicit_catalog_marker(text: str) -> bool:
+    return bool(EXPLICIT_CATALOG_PATTERN.search(_catalog_detection_text(text)))
+
+
+def _catalog_link_stats(lines: list[_RawParagraph]) -> tuple[int, int, int]:
+    counts = [len(DETECTION_LINK_PATTERN.findall(item.text)) for item in lines]
+    return sum(counts), sum(count > 0 for count in counts), max(counts, default=0)
+
+
+def _has_resumed_body(lines: list[_RawParagraph]) -> bool:
+    for item in lines[1:]:
+        link_count = len(DETECTION_LINK_PATTERN.findall(item.text))
+        residual = DETECTION_LINK_PATTERN.sub(
+            "", _catalog_detection_text(item.text)
+        ).strip(" ：:，,。；;")
+        if not residual or is_explicit_catalog_marker(residual):
+            continue
+        if TRAILING_MARKER_PATTERN.search(residual):
+            continue
+        sentence_endings = sum(residual.count(mark) for mark in "。！？；?!;")
+        if link_count == 0 and (len(residual) >= 120 or sentence_endings >= 4):
+            return True
+        if link_count > 0 and len(residual) >= 160:
+            return True
+    return False
+
+
+def _analyze_trailing_catalog_lines(raw: list[_RawParagraph]) -> TrailingCatalogAnalysis:
+    if not raw:
+        return TrailingCatalogAnalysis("none", None, None, None, 0, 0, None)
+    ambiguous: tuple[int, int, int, str] | None = None
+    high_confidence: list[tuple[int, int, int]] = []
+
+    for index in range(len(raw)):
+        text = _catalog_detection_text(raw[index].text)
+        explicit = bool(EXPLICIT_CATALOG_PATTERN.search(text))
+        weak = bool(TRAILING_MARKER_PATTERN.search(text))
+        if not explicit and not weak:
+            continue
+        suffix = raw[index:]
+        link_count, linked_lines, max_line_links = _catalog_link_stats(suffix)
+        link_ratio = linked_lines / len(suffix)
+        dense_links = (
+            link_count >= 5
+            and linked_lines >= 3
+            and (link_ratio >= 0.45 or (max_line_links >= 5 and link_ratio >= 0.25))
+        )
+        resumed_body = _has_resumed_body(suffix)
+        if explicit and dense_links and not resumed_body:
+            high_confidence.append((index, link_count, linked_lines))
+            continue
+        if (explicit and link_count >= 2) or (weak and link_count >= 2 and link_ratio >= 0.25):
+            reason = "catalog-signals-conflict" if resumed_body else "catalog-signals-incomplete"
+            if ambiguous is None or index < ambiguous[0]:
+                ambiguous = (index, link_count, linked_lines, reason)
+
+    if high_confidence:
+        index, link_count, linked_lines = min(high_confidence, key=lambda item: item[0])
+        return TrailingCatalogAnalysis(
+            "remove",
+            raw[index].start,
+            raw[-1].end,
+            index + 1,
+            link_count,
+            linked_lines,
+            "explicit-marker-and-dense-tail-links",
+        )
+
+    tail = raw[-min(20, len(raw)) :]
+    tail_link_count, tail_linked_lines, _ = _catalog_link_stats(tail)
+    if ambiguous is None and tail_link_count >= 5 and tail_linked_lines >= 3:
+        first_linked = next(
+            index
+            for index, item in enumerate(raw[-min(20, len(raw)) :], start=len(raw) - len(tail))
+            if DETECTION_LINK_PATTERN.search(item.text)
+        )
+        ambiguous = (first_linked, tail_link_count, tail_linked_lines, "dense-tail-links")
+
+    if ambiguous is not None:
+        index, link_count, linked_lines, reason = ambiguous
+        return TrailingCatalogAnalysis(
+            "review",
+            raw[index].start,
+            raw[-1].end,
+            index + 1,
+            link_count,
+            linked_lines,
+            reason,
+        )
+    return TrailingCatalogAnalysis("none", None, None, None, 0, 0, None)
+
+
+def analyze_trailing_catalog(markdown: str) -> TrailingCatalogAnalysis:
+    return _analyze_trailing_catalog_lines(_raw_lines(markdown))
+
+
 def clean_markdown(markdown: str) -> CleanupResult:
     raw = _raw_lines(markdown)
     if not raw:
         raise ValueError("Markdown 不包含可索引正文")
 
-    cutoff: int | None = None
-    needs_review = False
+    analysis = _analyze_trailing_catalog_lines(raw)
+    cutoff = (
+        next(
+            index
+            for index, item in enumerate(raw)
+            if analysis.source_start is not None and item.start == analysis.source_start
+        )
+        if analysis.status == "remove"
+        else None
+    )
+    needs_review = analysis.status == "review"
     warnings: list[str] = []
-    search_start = max(0, len(raw) - max(20, int(len(raw) * 0.30)))
-    for index in range(search_start, len(raw)):
-        suffix = raw[index:]
-        suffix_text = "\n\n".join(item.text for item in suffix)
-        link_count = len(LINK_PATTERN.findall(suffix_text))
-        has_marker = bool(TRAILING_MARKER_PATTERN.search(raw[index].text))
-        linked_paragraphs = sum(bool(LINK_PATTERN.search(item.text)) for item in suffix)
-        if has_marker and link_count >= 5 and linked_paragraphs >= 3:
-            cutoff = index
-            break
-        if has_marker and link_count >= 2:
-            needs_review = True
-            warnings.append(f"尾部单元 {index + 1} 疑似目录或推广区，需要人工确认")
-            break
+    if needs_review:
+        warnings.append(
+            f"尾部单元 {analysis.line_number} 疑似目录或推广区，需要人工确认"
+        )
 
     kept_lines = raw if cutoff is None else raw[:cutoff]
     kept = [unit for line in kept_lines for unit in _sentence_units(line)]
@@ -425,11 +550,39 @@ def scan_corpus(
         if active_version is not None:
             modified += 1
         version_id = stable_id("version", article.id, canonical_hash, CLEANER_VERSION)
+        replaceable_statuses = {
+            VersionStatus.NEEDS_CLEANUP_REVIEW.value,
+            VersionStatus.PENDING_CHUNKING.value,
+            VersionStatus.PENDING_REVIEW.value,
+        }
+        if (
+            active_version is not None
+            and active_version.id != version_id
+            and active_version.status in replaceable_statuses
+        ):
+            active_version.active = False
+            active_version.status = VersionStatus.INACTIVE.value
         existing_version = session.get(ArticleVersionRow, version_id)
         if existing_version is not None:
             existing_version.active = True
             existing_version.source_hash = source_hash
-            unchanged += 1
+            if existing_version.status == VersionStatus.INACTIVE.value:
+                has_manifest = session.scalar(
+                    select(ApprovedManifestRow.id).where(
+                        ApprovedManifestRow.version_id == existing_version.id
+                    )
+                )
+                existing_version.status = (
+                    VersionStatus.APPROVED.value
+                    if has_manifest is not None
+                    else (
+                        VersionStatus.NEEDS_CLEANUP_REVIEW.value
+                        if cleaned.needs_review
+                        else VersionStatus.PENDING_CHUNKING.value
+                    )
+                )
+            if active_version is None:
+                unchanged += 1
             continue
         status = (
             VersionStatus.NEEDS_CLEANUP_REVIEW

@@ -72,7 +72,7 @@ class FakeEmbeddingProvider:
 
     def encode_documents(self, texts: list[str]) -> np.ndarray:
         return np.asarray(
-            [[1.0, 0.0] if "苹果" in text else [0.0, 1.0] for text in texts],
+            [[0.0, 1.0] if "火箭" in text else [1.0, 0.0] for text in texts],
             dtype=np.float32,
         )
 

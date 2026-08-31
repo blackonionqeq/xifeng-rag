@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 
 from xifeng_rag.corpus import (
     CLEANER_VERSION,
+    analyze_trailing_catalog,
     clean_markdown,
     discover_markdown,
     load_external_article_ids,
@@ -95,6 +96,97 @@ def test_clean_markdown_flags_ambiguous_trailing_section() -> None:
     result = clean_markdown(markdown)
     assert result.needs_review
     assert not result.removed_ranges
+
+
+def test_clean_markdown_backtracks_to_earliest_multi_account_catalog_intro() -> None:
+    first_links = "\n\n".join(
+        f"[大号文章{i}](https://example.test/main/{i})" for i in range(6)
+    )
+    second_links = "\n\n".join(
+        f"[小号文章{i}](https://example.test/side/{i})" for i in range(5)
+    )
+    intro = "所以读者问，怎么知道是否全部的付费文都看过了。给你整理出来了。"
+    markdown = "\n\n".join(
+        [
+            "# 标题",
+            "正文有完整结论。",
+            intro,
+            "**这是大号****全部的付费文章：**",
+            first_links,
+            "**这是小号****所有的付费文章：****",
+            second_links,
+        ]
+    )
+
+    analysis = analyze_trailing_catalog(markdown)
+    result = clean_markdown(markdown)
+
+    assert analysis.status == "remove"
+    assert analysis.source_start == markdown.index(intro)
+    assert result.removed_ranges == [(markdown.index(intro), len(markdown))]
+    assert "正文有完整结论" in result.canonical_text
+    assert "付费文" not in result.canonical_text
+
+
+def test_clean_markdown_detects_catalog_heading_after_packed_link_line() -> None:
+    packed = "".join(
+        f"[文章{i}](https://example.test/packed/{i})" for i in range(6)
+    )
+    marker = "**这是小号****所有的付费文章：**"
+    trailing = "\n\n".join(
+        f"[后续{i}](https://example.test/trailing/{i})" for i in range(5)
+    )
+    markdown = "\n\n".join(["# 标题", "正文。", packed + marker, trailing])
+
+    result = clean_markdown(markdown)
+
+    assert result.removed_ranges == [(markdown.index(packed), len(markdown))]
+    assert result.canonical_text == "# 标题\n\n正文。"
+
+
+def test_clean_markdown_counts_empty_anchor_as_catalog_structure() -> None:
+    links = ["[](https://example.test/empty)"] + [
+        f"[文章{i}](https://example.test/{i})" for i in range(4)
+    ]
+    marker = "这里是所有的付费文章链接："
+    markdown = "\n\n".join(["# 标题", "正文。", marker, *links])
+
+    result = clean_markdown(markdown)
+
+    assert result.removed_ranges == [(markdown.index(marker), len(markdown))]
+    assert result.canonical_text == "# 标题\n\n正文。"
+
+
+def test_clean_markdown_does_not_remove_normal_tail_reference() -> None:
+    markdown = "\n\n".join(
+        [
+            "# 标题",
+            "正文讨论付费服务本身，但不是文章目录。",
+            "可参考[一份资料](https://example.test/reference)。",
+        ]
+    )
+
+    result = clean_markdown(markdown)
+
+    assert result.removed_ranges == []
+    assert not result.needs_review
+    assert "一份资料" in result.canonical_text
+
+
+def test_clean_markdown_requires_review_when_body_resumes_after_catalog() -> None:
+    links = "\n\n".join(
+        f"[文章{i}](https://example.test/{i})" for i in range(6)
+    )
+    resumed = "这是重新恢复的正文论述。" * 20
+    markdown = "\n\n".join(
+        ["# 标题", "正文。", "这里是所有的付费文章链接：", links, resumed]
+    )
+
+    result = clean_markdown(markdown)
+
+    assert result.needs_review
+    assert result.removed_ranges == []
+    assert result.canonical_text.count("这是重新恢复的正文论述。") == 20
 
 
 def test_discover_rejects_missing_or_empty_directory(tmp_path: Path) -> None:
@@ -296,3 +388,40 @@ def test_scan_creates_new_version_when_cleaner_version_changes(
         assert len(versions) == 2
         assert versions[0].source_hash == versions[1].source_hash
         assert versions[0].cleaner_version != versions[1].cleaner_version
+        assert not versions[0].active
+        assert versions[0].status == VersionStatus.INACTIVE.value
+        assert versions[1].active
+
+
+def test_scan_reactivates_unapproved_current_cleaner_version_after_index_switch(
+    database: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "a.md").write_text("# 标题\n正文。", encoding="utf-8")
+
+    monkeypatch.setattr("xifeng_rag.corpus.CLEANER_VERSION", "test-cleaner-v1")
+    with database.session() as session:
+        scan_corpus(session, corpus)
+    monkeypatch.setattr("xifeng_rag.corpus.CLEANER_VERSION", CLEANER_VERSION)
+    with database.session() as session:
+        scan_corpus(session, corpus)
+        versions = list(
+            session.scalars(select(ArticleVersionRow).order_by(ArticleVersionRow.created_at)).all()
+        )
+        versions[0].active = True
+        versions[0].status = VersionStatus.INDEXED.value
+        versions[1].active = False
+        versions[1].status = VersionStatus.INACTIVE.value
+
+    with database.session() as session:
+        summary = scan_corpus(session, corpus)
+        assert summary.modified == 1
+        assert summary.unchanged == 0
+        versions = list(
+            session.scalars(select(ArticleVersionRow).order_by(ArticleVersionRow.created_at)).all()
+        )
+        assert versions[0].active
+        assert versions[0].status == VersionStatus.INDEXED.value
+        assert versions[1].active
+        assert versions[1].status == VersionStatus.PENDING_CHUNKING.value

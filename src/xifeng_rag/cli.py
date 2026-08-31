@@ -36,7 +36,15 @@ from xifeng_rag.chunking import (
 )
 from xifeng_rag.config import Settings, load_settings
 from xifeng_rag.context_assembly import assemble_context
-from xifeng_rag.corpus import discover_markdown, scan_corpus
+from xifeng_rag.corpus import (
+    CLEANER_VERSION,
+    analyze_trailing_catalog,
+    clean_markdown,
+    discover_markdown,
+    extract_title,
+    scan_corpus,
+    sha256_text,
+)
 from xifeng_rag.corpus_ui import run_corpus_dashboard
 from xifeng_rag.domain import (
     AssemblyResult,
@@ -927,6 +935,96 @@ def overviews_revise_pending(
                 )
         if failed:
             raise RuntimeError("部分待审概括精简失败；成功项已保留")
+    except Exception as exc:
+        _abort(exc)
+
+
+@corpus_app.command("cleanup-dry-run")
+def corpus_cleanup_dry_run(
+    ctx: typer.Context,
+    show_all: Annotated[
+        bool, typer.Option("--all", help="同时显示清洗判断未变化的文章")
+    ] = False,
+) -> None:
+    """只读比较新清洗规则，不修改语料或业务数据。"""
+    runtime = _runtime(ctx)
+    try:
+        files = discover_markdown(runtime.settings.source_dir)
+        with runtime.database.session() as session:
+            article_ids_by_path: dict[str, str] = {
+                source_path: article_id
+                for source_path, article_id in session.execute(
+                    select(ArticleRow.source_path, ArticleRow.id)
+                ).all()
+            }
+            rows = session.execute(
+                select(ArticleRow.source_path, ArticleVersionRow)
+                .join(ArticleVersionRow, ArticleVersionRow.article_id == ArticleRow.id)
+                .where(ArticleVersionRow.active.is_(True))
+                .order_by(ArticleVersionRow.created_at.desc())
+            ).all()
+        current_by_path: dict[str, ArticleVersionRow] = {}
+        for source_path, version in rows:
+            current_by_path.setdefault(source_path, version)
+
+        excluded_ids = frozenset(runtime.settings.corpus.excluded_article_ids)
+        changed = review = removable = processed = excluded = 0
+        for path in files:
+            relative = path.relative_to(runtime.settings.source_dir).as_posix()
+            if article_ids_by_path.get(relative) in excluded_ids:
+                excluded += 1
+                continue
+            processed += 1
+            markdown = path.read_text(encoding="utf-8-sig")
+            analysis = analyze_trailing_catalog(markdown)
+            canonical_hash = sha256_text(clean_markdown(markdown).canonical_text)
+            current = current_by_path.get(relative)
+            old_start: int | None = None
+            if current is not None:
+                old_ranges = json.loads(current.removed_ranges_json)
+                if (
+                    isinstance(old_ranges, list)
+                    and old_ranges
+                    and isinstance(old_ranges[0], list)
+                    and old_ranges[0]
+                    and isinstance(old_ranges[0][0], int)
+                ):
+                    old_start = old_ranges[0][0]
+            content_changed = current is None or current.canonical_hash != canonical_hash
+            differs = (
+                current is None
+                or current.cleaner_version != CLEANER_VERSION
+                or content_changed
+                or old_start != analysis.source_start
+                or (
+                    analysis.status == "review"
+                    and current.status != VersionStatus.NEEDS_CLEANUP_REVIEW.value
+                )
+            )
+            changed += int(differs)
+            review += int(analysis.status == "review")
+            removable += int(analysis.status == "remove")
+            if not differs and not show_all:
+                continue
+            removed_chars = (
+                analysis.source_end - analysis.source_start
+                if analysis.source_start is not None and analysis.source_end is not None
+                else 0
+            )
+            title = extract_title(markdown, path.stem)
+            typer.echo(
+                f"{analysis.status.upper():6}  {title}  "
+                f"旧起点={old_start if old_start is not None else '-'}  "
+                f"新起点={analysis.source_start if analysis.source_start is not None else '-'}  "
+                f"正文变化={'是' if content_changed else '否'}  "
+                f"移除字符={removed_chars}  链接={analysis.link_count}  "
+                f"链接行={analysis.linked_lines}"
+            )
+        typer.echo(
+            f"共检查 {processed} 篇，排除 {excluded} 篇；判断变化 {changed}，"
+            f"自动移除 {removable}，待审核 {review}。"
+        )
+        typer.echo("只读检查完成：未修改外部语料或业务数据。")
     except Exception as exc:
         _abort(exc)
 

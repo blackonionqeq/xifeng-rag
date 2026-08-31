@@ -1,5 +1,7 @@
 # 文末付费文章目录清洗加固实施计划
 
+状态：已完成。
+
 关联设计：[`docs/specs/2026-08-31-trailing-catalog-cleanup-design.md`](../specs/2026-08-31-trailing-catalog-cleanup-design.md)
 
 ## 目标

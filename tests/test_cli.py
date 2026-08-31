@@ -45,6 +45,47 @@ def test_corpus_scan_reports_resolved_path_and_count_without_body(
     assert private_body not in result.output
 
 
+def test_cleanup_dry_run_reports_only_metadata_and_does_not_create_versions(
+    tmp_path: Path,
+) -> None:
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    private_anchor = "不能出现在输出中的目录标题"
+    links = "\n\n".join(
+        f"[{private_anchor}{index}](https://example.test/{index})" for index in range(5)
+    )
+    (corpus / "one.md").write_text(
+        "\n\n".join(["# 自造文章", "正文。", "这里是所有的付费文章链接：", links]),
+        encoding="utf-8",
+    )
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        f"project_root: {tmp_path.as_posix()}\n"
+        "corpus:\n"
+        "  source_dir: corpus\n"
+        "storage:\n"
+        "  data_dir: data\n",
+        encoding="utf-8",
+    )
+    assert runner.invoke(app, ["--config", str(config), "corpus", "scan"]).exit_code == 0
+    database = Database(tmp_path / "data" / "xifeng.sqlite3")
+    with database.session() as session:
+        before = session.scalar(select(func.count()).select_from(ArticleVersionRow))
+
+    result = runner.invoke(
+        app, ["--config", str(config), "corpus", "cleanup-dry-run", "--all"]
+    )
+
+    assert result.exit_code == 0
+    assert "REMOVE" in result.output
+    assert "只读检查完成" in result.output
+    assert private_anchor not in result.output
+    assert "https://" not in result.output
+    with database.session() as session:
+        after = session.scalar(select(func.count()).select_from(ArticleVersionRow))
+    assert after == before
+
+
 def test_corpus_manage_starts_local_dashboard(tmp_path: Path, monkeypatch) -> None:
     corpus = tmp_path / "corpus"
     corpus.mkdir()

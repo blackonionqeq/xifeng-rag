@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from xifeng_rag.config import ExternalChunkingProfile, OllamaSettings
-from xifeng_rag.corpus import sha256_text, stable_id
+from xifeng_rag.corpus import is_explicit_catalog_marker, sha256_text, stable_id
 from xifeng_rag.domain import (
     GeneratedTopicProposal,
     ProposalStatus,
@@ -36,7 +36,7 @@ from xifeng_rag.storage import (
 from xifeng_rag.structured_generation import CodexCliClient as CodexCliClient
 from xifeng_rag.structured_generation import GenerationResult, StructuredGenerator
 
-PROMPT_VERSION = "topic-segmentation-v6-outline-first"
+PROMPT_VERSION = "topic-segmentation-v7-catalog-defense"
 SCHEMA_VERSION = "topic-proposal-v3-end-unit"
 
 DEFAULT_SEGMENTATION_INSTRUCTION = """你为一篇付费长文章提出单层话题分块。
@@ -53,9 +53,11 @@ DEFAULT_SEGMENTATION_INSTRUCTION = """你为一篇付费长文章提出单层话
    主题、论证对象、核心观点或叙事阶段的明显转换推断边界。
 5. 输出能完整表达文章顶层结构的最少必要话题块。不预设块数或字符数；短而连贯的文章
    可以只有一个话题。阅读提示、付费说明或单句转折不要被机械拆成多个小话题。
-6. 当前只做单层顶层分块，不输出案例或解释组成的子话题，也不输出父子关系。
-7. end_unit 必须严格递增，最后一个 end_unit 必须等于全文最后一个单元编号。
-8. 只返回 end_unit、简短话题标题、忠实概括和关键词，不复制原文，也不要把概括伪装为
+6. 清洗后若仍意外出现文末文章目录、推广区或相关文章链接列表，它不属于正文顶层话题，
+   必须与最后一个实质话题分开，不能把目录内容写进正文话题的标题、概括或关键词。
+7. 当前只做单层顶层分块，不输出案例或解释组成的子话题，也不输出父子关系。
+8. end_unit 必须严格递增，最后一个 end_unit 必须等于全文最后一个单元编号。
+9. 只返回 end_unit、简短话题标题、忠实概括和关键词，不复制原文，也不要把概括伪装为
    作者原话。是否进入索引由用户审核决定，不要输出内容角色或索引决定。"""
 
 
@@ -241,6 +243,37 @@ def _paragraphs(session: Session, version_id: str) -> list[ParagraphRow]:
     )
 
 
+def _residual_catalog_start(
+    paragraphs: list[ParagraphRow], links_json: str
+) -> int | None:
+    try:
+        links = json.loads(links_json)
+    except json.JSONDecodeError as exc:
+        raise ValueError("文章版本的链接元数据损坏") from exc
+    if not isinstance(links, list):
+        raise ValueError("文章版本的链接元数据格式错误")
+    positions: list[tuple[int, int]] = []
+    for item in links:
+        if not isinstance(item, dict):
+            continue
+        source_start = item.get("source_start")
+        source_end = item.get("source_end")
+        if isinstance(source_start, int) and isinstance(source_end, int):
+            positions.append((source_start, source_end))
+    for index in range(len(paragraphs)):
+        paragraph = paragraphs[index]
+        if not is_explicit_catalog_marker(paragraph.text):
+            continue
+        downstream = [item for item in positions if item[0] >= paragraph.source_start]
+        linked_units = sum(
+            any(start < unit.source_end and end > unit.source_start for start, end in downstream)
+            for unit in paragraphs[index:]
+        )
+        if len(downstream) >= 5 and linked_units >= 3:
+            return paragraph.number
+    return None
+
+
 def segmentation_prompt(
     title: str,
     paragraphs: list[ParagraphRow],
@@ -338,6 +371,12 @@ def propose_chunks(
     if article is None:
         raise ValueError("文章不存在")
     paragraphs = _paragraphs(session, version.id)
+    residual_catalog = _residual_catalog_start(paragraphs, version.links_json)
+    if residual_catalog is not None:
+        raise ValueError(
+            f"规范正文尾部从单元 {residual_catalog} 起疑似残留付费文章目录；"
+            "请先重新扫描语料或完成清洗审核"
+        )
     selected_instruction = custom_prompt or DEFAULT_SEGMENTATION_INSTRUCTION
     prompt_hash = sha256_text(selected_instruction)
     prompt_version = PROMPT_VERSION if custom_prompt is None else f"custom-{prompt_hash[:12]}"
