@@ -416,6 +416,56 @@ def test_frozen_evaluation_records_reranker_metadata(
         assert "自造原文" not in run.details_json
 
 
+def test_frozen_evaluation_records_and_summarizes_evidence_assessment(
+    database: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset_id, question_id = _draft_question(database, tmp_path)
+    with database.session() as session:
+        save_reviewed_answer(session, question_id, _review_value())
+        freeze_dataset(session, dataset_id)
+
+    def fake_search(session, query: str, top_k: int, build_id: str | None = None, **kwargs):
+        del session, query, top_k, build_id, kwargs
+        return [
+            RetrievalCandidate(
+                chunk_id="chunk_eval_1",
+                article_id="article_eval_test",
+                article_version="version_eval_test",
+                article_title="自造评测文章",
+                original_text="不写入评估详情的自造原文",
+                paragraph_range=(1, 2),
+                retrieval_scores=RetrievalScores(bm25=1.0),
+                source=["bm25"],
+            )
+        ]
+
+    monkeypatch.setattr("xifeng_rag.evaluation.search", fake_search)
+    with database.session() as session:
+        outcome = run_frozen_evaluation(
+            session,
+            dataset_id,
+            k=1,
+            evidence_assessment_enabled=True,
+            evidence_assessment_observation_k=5,
+        )
+
+    summary = outcome["evidence_assessment"]
+    assert isinstance(summary, dict)
+    assert summary["calculation_version"] == "evidence-assessment-v1"
+    summary_metrics = summary["metrics"]
+    assert isinstance(summary_metrics, dict)
+    assert summary_metrics["candidate_count"]["mean"] == 1.0  # type: ignore[index]
+    assert summary_metrics["top1_reranker_score"]["count"] == 0  # type: ignore[index]
+    with database.session() as session:
+        run = session.scalar(select(EvaluationRunRow))
+        assert run is not None
+        details = json.loads(run.details_json)
+        assert details[0]["evidence_assessment"]["candidate_count"] == 1
+        persisted_metrics = json.loads(run.metrics_json)
+        assert persisted_metrics["evidence_assessment"]["assessment_count"] == 1
+        assert "不写入评估详情的自造原文" not in run.details_json
+
+
 def test_frozen_evaluation_records_query_rewrite_details(
     database: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

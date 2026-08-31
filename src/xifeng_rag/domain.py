@@ -156,6 +156,30 @@ class QueryMatch(BaseModel):
     layer_sources: list[str] = Field(default_factory=list)
 
 
+class EvidenceAssessmentStatus(StrEnum):
+    SUCCESS = "success"
+    FAILED = "failed"
+
+
+class EvidenceAssessment(BaseModel):
+    status: EvidenceAssessmentStatus
+    calculation_version: str = Field(min_length=1)
+    observation_k: int = Field(gt=0)
+    observed_count: int = Field(ge=0)
+    candidate_count: int = Field(ge=0)
+    article_count_at_k: int = Field(ge=0)
+    top1_reranker_score: float | None = None
+    top1_top2_margin: float | None = None
+    top1_top3_margin: float | None = None
+    top1_dual_retrieval: bool | None = None
+    dual_retrieval_rate_at_k: float | None = Field(default=None, ge=0, le=1)
+    shared_by_original_and_rewrite_rate_at_k: float | None = Field(
+        default=None, ge=0, le=1
+    )
+    top1_shared_by_original_and_rewrite: bool | None = None
+    diagnostic: str | None = None
+
+
 class RetrievalCandidate(BaseModel):
     chunk_id: str
     article_id: str

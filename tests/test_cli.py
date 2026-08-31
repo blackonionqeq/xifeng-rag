@@ -316,6 +316,47 @@ def test_search_rewrite_failure_falls_back_to_original_query(
     assert "已退回原问题检索" in result.stderr
 
 
+def test_search_evidence_assessment_wraps_json_only_when_enabled(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        f"project_root: {tmp_path.as_posix()}\n"
+        "storage:\n  data_dir: data\n"
+        "evidence_assessment:\n  enabled: true\n  observation_k: 3\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "xifeng_rag.cli.search",
+        lambda *args, **kwargs: [
+            RetrievalCandidate(
+                chunk_id="chunk-1",
+                article_id="article-1",
+                article_version="version-1",
+                article_title="自造文章",
+                original_text="不进入评估结果的自造证据",
+                paragraph_range=(1, 1),
+                retrieval_scores=RetrievalScores(bm25=1.0),
+                source=["bm25"],
+            )
+        ],
+    )
+
+    result = runner.invoke(
+        app,
+        ["--config", str(config), "search", "问题", "--mode", "bm25", "--json"],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["candidates"][0]["chunk_id"] == "chunk-1"
+    assessment = payload["evidence_assessment"]
+    assert assessment["candidate_count"] == 1
+    assert assessment["top1_reranker_score"] is None
+    assert "证据观测" in result.stderr
+
+
 def test_search_assemble_json_uses_local_ranked_candidates(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -393,6 +434,32 @@ def test_ask_without_evidence_does_not_require_key_or_network(
     assert result.exit_code == 0
     assert "现有资料不足以回答" in result.stdout
     assert "本次检索未找到" in result.stdout
+    assert "即将把" not in result.stderr
+
+
+def test_ask_evidence_assessment_is_returned_without_calling_generator(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        f"project_root: {tmp_path.as_posix()}\n"
+        "storage:\n  data_dir: data\n"
+        "evidence_assessment:\n  enabled: true\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setattr("xifeng_rag.cli.search", lambda *args, **kwargs: [])
+
+    result = runner.invoke(
+        app,
+        ["--config", str(config), "ask", "无法回答的问题", "--mode", "bm25", "--json"],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["answer"]["status"] == "insufficient_evidence"
+    assert payload["evidence_assessment"]["candidate_count"] == 0
+    assert "证据观测" in result.stderr
     assert "即将把" not in result.stderr
 
 

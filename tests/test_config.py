@@ -125,6 +125,8 @@ def test_embedding_cache_path_and_retrieval_defaults(tmp_path: Path) -> None:
     assert settings.query_rewrite.original_weight == 1.0
     assert settings.query_rewrite.rewrite_total_weight == 0.7
     assert settings.query_rewrite.candidate_limit == 128
+    assert not settings.evidence_assessment.enabled
+    assert settings.evidence_assessment.observation_k == 5
     assert settings.layered.target_chars == 400
     assert settings.layered.max_chars == 600
     assert settings.layered.parent_candidate_k == 5

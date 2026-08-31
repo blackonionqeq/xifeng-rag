@@ -54,6 +54,11 @@ class QueryRewriteSettings(BaseModel):
     candidate_limit: int = Field(default=128, gt=0, le=5000)
 
 
+class EvidenceAssessmentSettings(BaseModel):
+    enabled: bool = False
+    observation_k: int = Field(default=5, gt=0, le=1000)
+
+
 class LayeredRetrievalSettings(BaseModel):
     splitter_version: str = Field(default="atomic-greedy-v1", min_length=1)
     target_chars: int = Field(default=400, gt=0)
@@ -144,6 +149,9 @@ class Settings(BaseSettings):
     embedding: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
     retrieval: RetrievalSettings = Field(default_factory=RetrievalSettings)
     query_rewrite: QueryRewriteSettings = Field(default_factory=QueryRewriteSettings)
+    evidence_assessment: EvidenceAssessmentSettings = Field(
+        default_factory=EvidenceAssessmentSettings
+    )
     layered: LayeredRetrievalSettings = Field(default_factory=LayeredRetrievalSettings)
     reranker: RerankerSettings = Field(default_factory=RerankerSettings)
     context_assembly: ContextAssemblySettings = Field(default_factory=ContextAssemblySettings)

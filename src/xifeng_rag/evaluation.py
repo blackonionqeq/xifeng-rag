@@ -13,7 +13,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from xifeng_rag.corpus import stable_id
-from xifeng_rag.domain import LayeredRetrievalMode, RetrievalMode
+from xifeng_rag.domain import (
+    EvidenceAssessment,
+    EvidenceAssessmentStatus,
+    LayeredRetrievalMode,
+    RetrievalMode,
+)
+from xifeng_rag.evidence_assessment import assess_evidence
 from xifeng_rag.indexing import (
     EmbeddingProvider,
     search,
@@ -153,6 +159,8 @@ def run_frozen_evaluation(
     rewrite_total_weight: float = 0.7,
     rewrite_fusion_rrf_k: int = 60,
     rewrite_candidate_limit: int = 128,
+    evidence_assessment_enabled: bool = False,
+    evidence_assessment_observation_k: int = 5,
 ) -> dict[str, object]:
     if k <= 0:
         raise ValueError("k 必须大于 0")
@@ -191,6 +199,7 @@ def run_frozen_evaluation(
     ):
         raise ValueError("查询改写评测需要 Hybrid、Embedding Provider 和 Reranker")
     details: list[dict[str, object]] = []
+    assessments: list[EvidenceAssessment] = []
     for question in questions:
         evidence = list(
             session.scalars(
@@ -303,6 +312,13 @@ def run_frozen_evaluation(
                 rerank_candidate_k=rerank_candidate_k,
             )
         latency_ms = (time.perf_counter() - started) * 1000
+        assessment = (
+            assess_evidence(candidates, evidence_assessment_observation_k)
+            if evidence_assessment_enabled
+            else None
+        )
+        if assessment is not None:
+            assessments.append(assessment)
         ranked = [item.chunk_id for item in candidates]
         retrieved_ranges = [
             (item.article_version, item.paragraph_range[0], item.paragraph_range[1])
@@ -344,8 +360,7 @@ def run_frozen_evaluation(
             question_recall = recall_at_k(ranked, relevant, k)
             question_mrr = reciprocal_rank(ranked, relevant)
             question_ndcg = ndcg_at_k(ranked, relevant, k)
-        details.append(
-            {
+        question_detail: dict[str, object] = {
                 "question_id": question.id,
                 "split": question.split,
                 "ranked_chunk_ids": ranked,
@@ -409,7 +424,9 @@ def run_frozen_evaluation(
                     else None
                 ),
             }
-        )
+        if assessment is not None:
+            question_detail["evidence_assessment"] = assessment.model_dump(mode="json")
+        details.append(question_detail)
     metric_names = [
         "precision_at_k",
         "recall_at_k",
@@ -417,7 +434,7 @@ def run_frozen_evaluation(
         "ndcg_at_k",
         "evidence_coverage_at_k",
     ]
-    metrics = {
+    metrics: dict[str, object] = {
         name: statistics.fmean(float(str(item[name])) for item in details)
         for name in metric_names
     }
@@ -441,6 +458,12 @@ def run_frozen_evaluation(
         metrics["rewrite_failure_rate"] = sum(
             item["status"] == QueryRewriteStatus.FAILED.value for item in rewrite_details
         ) / len(rewrite_details)
+    assessment_summary = (
+        summarize_evidence_assessments(assessments) if assessments else None
+    )
+    persisted_metrics = dict(metrics)
+    if assessment_summary is not None:
+        persisted_metrics["evidence_assessment"] = assessment_summary
     run_id = stable_id("eval", dataset.id, build.id, str(time.time_ns()), length=32)
     code_commit, worktree_dirty = _git_state()
     reranker_metadata = dict(reranker.metadata) if reranker is not None else {}
@@ -452,7 +475,7 @@ def run_frozen_evaluation(
             id=run_id,
             dataset_id=dataset.id,
             build_id=build.id,
-            metrics_json=json.dumps(metrics),
+            metrics_json=json.dumps(persisted_metrics),
             details_json=json.dumps(details, ensure_ascii=False),
             dataset_content_hash=dataset.content_hash,
             corpus_snapshot=build.corpus_snapshot,
@@ -489,7 +512,7 @@ def run_frozen_evaluation(
             ),
         )
     )
-    return {
+    outcome: dict[str, object] = {
         "run_id": run_id,
         "dataset_id": dataset.id,
         "retrieval_mode": str(RetrievalMode(mode)),
@@ -518,6 +541,59 @@ def run_frozen_evaluation(
             else None
         ),
         "metrics": metrics,
+    }
+    if assessment_summary is not None:
+        outcome["evidence_assessment"] = assessment_summary
+    return outcome
+
+
+_ASSESSMENT_SUMMARY_FIELDS = (
+    "observed_count",
+    "candidate_count",
+    "article_count_at_k",
+    "top1_reranker_score",
+    "top1_top2_margin",
+    "top1_top3_margin",
+    "top1_dual_retrieval",
+    "dual_retrieval_rate_at_k",
+    "shared_by_original_and_rewrite_rate_at_k",
+    "top1_shared_by_original_and_rewrite",
+)
+
+
+def summarize_evidence_assessments(
+    assessments: list[EvidenceAssessment],
+) -> dict[str, object]:
+    status_counts: dict[str, int] = {}
+    for assessment in assessments:
+        key = assessment.status.value
+        status_counts[key] = status_counts.get(key, 0) + 1
+
+    successful = [
+        item for item in assessments if item.status == EvidenceAssessmentStatus.SUCCESS
+    ]
+    summaries: dict[str, object] = {}
+    for field_name in _ASSESSMENT_SUMMARY_FIELDS:
+        values: list[float] = []
+        for assessment in successful:
+            value = getattr(assessment, field_name)
+            if value is not None:
+                values.append(float(value))
+        summaries[field_name] = {
+            "count": len(values),
+            "mean": statistics.fmean(values) if values else None,
+            "median": statistics.median(values) if values else None,
+            "min": min(values) if values else None,
+            "max": max(values) if values else None,
+        }
+
+    return {
+        "calculation_version": (
+            assessments[0].calculation_version if assessments else None
+        ),
+        "assessment_count": len(assessments),
+        "status_counts": status_counts,
+        "metrics": summaries,
     }
 
 

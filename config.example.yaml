@@ -25,6 +25,9 @@ query_rewrite:
   rewrite_total_weight: 0.7
   fusion_rrf_k: 60
   candidate_limit: 128
+evidence_assessment:
+  enabled: false
+  observation_k: 5
 layered:
   splitter_version: atomic-greedy-v1
   target_chars: 400

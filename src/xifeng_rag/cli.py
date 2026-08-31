@@ -31,6 +31,8 @@ from xifeng_rag.domain import (
     AssemblyStatus,
     BuildStatus,
     ContextAssemblyConfigSnapshot,
+    EvidenceAssessment,
+    EvidenceAssessmentStatus,
     LayeredRetrievalMode,
     ProposalStatus,
     RetrievalCandidate,
@@ -39,6 +41,7 @@ from xifeng_rag.domain import (
 )
 from xifeng_rag.evaluation import run_evaluation, run_frozen_evaluation
 from xifeng_rag.evaluation_ui import run_evaluation_server
+from xifeng_rag.evidence_assessment import assess_evidence
 from xifeng_rag.generation import (
     AnswerGenerationResult,
     AnswerStatus,
@@ -154,6 +157,29 @@ def _echo_query_rewrite(result: QueryRewriteResult) -> None:
             f"查询改写失败（{result.diagnostic or 'unknown'}），已退回原问题检索。",
             err=True,
         )
+
+
+def _echo_evidence_assessment(result: EvidenceAssessment) -> None:
+    if result.status == EvidenceAssessmentStatus.FAILED:
+        typer.echo(f"证据观测失败：{result.diagnostic or 'unknown'}", err=True)
+        return
+
+    def render(value: float | bool | None) -> str:
+        if value is None:
+            return "—"
+        if isinstance(value, bool):
+            return "是" if value else "否"
+        return f"{value:.4f}"
+
+    typer.echo(
+        "证据观测："
+        f"候选={result.candidate_count}，文章={result.article_count_at_k}，"
+        f"Top1={render(result.top1_reranker_score)}，"
+        f"Δ1-2={render(result.top1_top2_margin)}，"
+        f"双路率={render(result.dual_retrieval_rate_at_k)}，"
+        f"原问/改写共有率={render(result.shared_by_original_and_rewrite_rate_at_k)}",
+        err=True,
+    )
 
 
 def _hybrid_index_builder(settings: Settings) -> IndexBuilder:
@@ -367,7 +393,11 @@ def _echo_assembly(result: AssemblyResult) -> None:
     typer.echo(f"上下文 SHA-256：{result.rendered_context_sha256}")
 
 
-def _answer_json(result: AnswerGenerationResult, context: AssemblyResult) -> str:
+def _answer_json(
+    result: AnswerGenerationResult,
+    context: AssemblyResult,
+    assessment: EvidenceAssessment | None = None,
+) -> str:
     sources = []
     for item in cited_evidence(result.answer, context):
         excerpt = item.original_text[:240].replace("\n", " ")
@@ -382,12 +412,15 @@ def _answer_json(result: AnswerGenerationResult, context: AssemblyResult) -> str
                 "original_text_excerpt": excerpt,
             }
         )
+    payload = {
+        **result.model_dump(mode="json"),
+        "rendered_answer": render_answer(result.answer, context),
+        "sources": sources,
+    }
+    if assessment is not None:
+        payload["evidence_assessment"] = assessment.model_dump(mode="json")
     return json.dumps(
-        {
-            **result.model_dump(mode="json"),
-            "rendered_answer": render_answer(result.answer, context),
-            "sources": sources,
-        },
+        payload,
         ensure_ascii=False,
         indent=2,
     )
@@ -870,6 +903,7 @@ def search_command(
     provider = None
     reranker = None
     rewrite_result = None
+    assessment = None
     try:
         if rerank_candidate_k is not None and not rerank:
             raise ValueError("--rerank-candidate-k 只能与 --rerank 一起使用")
@@ -911,19 +945,39 @@ def search_command(
                 layered=layered,
                 rewrite_result=rewrite_result,
             )
+        if runtime.settings.evidence_assessment.enabled:
+            assessment = assess_evidence(
+                candidates, runtime.settings.evidence_assessment.observation_k
+            )
+            _echo_evidence_assessment(assessment)
         if assemble_output:
             result = assemble_context(candidates, _assembly_config(runtime.settings))
             if as_json:
-                typer.echo(
-                    json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2)
-                )
+                payload: object = result.model_dump(mode="json")
+                if assessment is not None:
+                    payload = {
+                        "context": payload,
+                        "evidence_assessment": assessment.model_dump(mode="json"),
+                    }
+                typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
             else:
                 _echo_assembly(result)
             return
         if as_json:
-            typer.echo(
-                json.dumps([item.model_dump() for item in candidates], ensure_ascii=False, indent=2)
-            )
+            payload = [item.model_dump() for item in candidates]
+            if assessment is not None:
+                typer.echo(
+                    json.dumps(
+                        {
+                            "candidates": payload,
+                            "evidence_assessment": assessment.model_dump(mode="json"),
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
+            else:
+                typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
             return
         for rank, item in enumerate(candidates, start=1):
             snippet = item.original_text[:240].replace("\n", " ")
@@ -979,6 +1033,7 @@ def ask_command(
     provider = None
     reranker = None
     rewrite_result = None
+    assessment = None
     try:
         if rerank_candidate_k is not None and not rerank:
             raise ValueError("--rerank-candidate-k 只能与 --rerank 一起使用")
@@ -1020,6 +1075,11 @@ def ask_command(
                 layered=layered,
                 rewrite_result=rewrite_result,
             )
+        if runtime.settings.evidence_assessment.enabled:
+            assessment = assess_evidence(
+                candidates, runtime.settings.evidence_assessment.observation_k
+            )
+            _echo_evidence_assessment(assessment)
         context = assemble_context(candidates, _assembly_config(runtime.settings))
         if context.status == AssemblyStatus.NO_EVIDENCE:
             result = AnswerGenerationResult(
@@ -1052,7 +1112,7 @@ def ask_command(
             )
             result = generator.generate(question, context, supplement)
         if as_json:
-            typer.echo(_answer_json(result, context))
+            typer.echo(_answer_json(result, context, assessment))
         else:
             typer.echo(render_answer(result.answer, context))
     except Exception as exc:
@@ -1210,6 +1270,12 @@ def eval_run(
                     ),
                     rewrite_candidate_limit=(
                         runtime.settings.query_rewrite.candidate_limit
+                    ),
+                    evidence_assessment_enabled=(
+                        runtime.settings.evidence_assessment.enabled
+                    ),
+                    evidence_assessment_observation_k=(
+                        runtime.settings.evidence_assessment.observation_k
                     ),
                 )
             )
