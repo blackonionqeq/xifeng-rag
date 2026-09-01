@@ -87,6 +87,7 @@ class SentenceTransformersEmbeddingProvider:
         batch_size: int = 16,
         normalize_embeddings: bool = True,
         query_instruction: str = "为这个句子生成表示以用于检索相关文章：",
+        local_files_only: bool = True,
     ) -> None:
         from sentence_transformers import SentenceTransformer
 
@@ -96,6 +97,7 @@ class SentenceTransformersEmbeddingProvider:
             revision=revision,
             cache_folder=str(cache_dir) if cache_dir is not None else None,
             device=resolved_device,
+            local_files_only=local_files_only,
         )
         dimension = self._model.get_embedding_dimension()
         if dimension is None or dimension <= 0:

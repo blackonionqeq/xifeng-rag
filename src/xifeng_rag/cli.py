@@ -14,6 +14,11 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from xifeng_rag import __version__
+from xifeng_rag.article_evaluation import (
+    load_article_discovery_dataset,
+    run_article_discovery_evaluation,
+    save_article_discovery_evaluation,
+)
 from xifeng_rag.article_overviews import (
     approve_article_overview,
     propose_article_overview,
@@ -1705,6 +1710,69 @@ def eval_run(
     finally:
         if reranker is not None:
             reranker.close()
+        if provider is not None:
+            provider.close()
+
+
+@eval_app.command("article-discovery")
+def eval_article_discovery(
+    ctx: typer.Context,
+    dataset_path: Annotated[
+        Path | None,
+        typer.Argument(help="文章反查评测 JSON；默认使用 data/article_discovery_queries.json"),
+    ] = None,
+    build: Annotated[str | None, typer.Option("--build", help="指定文章级 Index Build")] = None,
+    as_json: Annotated[bool, typer.Option("--json", help="输出完整结构化运行结果")] = False,
+) -> None:
+    """在人工确认题上比较文章级 BM25、Dense 与 Hybrid。"""
+    runtime = _runtime(ctx)
+    provider = None
+    try:
+        resolved_dataset = (
+            dataset_path.resolve()
+            if dataset_path is not None
+            else runtime.settings.data_dir / "article_discovery_queries.json"
+        )
+        dataset = load_article_discovery_dataset(resolved_dataset)
+        provider = _embedding_provider(runtime.settings)
+        with runtime.database.session() as session:
+            outcome = run_article_discovery_evaluation(
+                session,
+                dataset,
+                resolved_dataset,
+                provider,
+                build_id=build,
+                bm25_candidate_k=runtime.settings.retrieval.bm25_candidate_k,
+                dense_candidate_k=runtime.settings.retrieval.dense_candidate_k,
+                rrf_k=runtime.settings.retrieval.rrf_k,
+            )
+        output_path = save_article_discovery_evaluation(
+            outcome, runtime.settings.data_dir / "evaluation_runs"
+        )
+        if as_json:
+            typer.echo(outcome.model_dump_json(indent=2))
+            return
+        typer.echo(
+            f"文章反查评测完成：{outcome.run_id}，确认题 {outcome.confirmed_question_count}，"
+            f"跳过 {outcome.skipped_question_count}"
+        )
+        for mode_result in outcome.modes:
+            metrics = mode_result.metrics
+            values = (
+                f"Hit@1={metrics.hit_at_1:.3f}  Hit@3={metrics.hit_at_3:.3f}  "
+                f"Hit@5={metrics.hit_at_5:.3f}  MRR={metrics.mrr:.3f}  "
+                f"平均={metrics.latency_mean_ms:.1f}ms  P95={metrics.latency_p95_ms:.1f}ms"
+                if metrics.mrr is not None
+                else "没有与当前 Build 兼容的确认题"
+            )
+            typer.echo(
+                f"{mode_result.mode.value}: {values}  "
+                f"不兼容={metrics.incompatible_question_count}"
+            )
+        typer.echo(f"结果：{output_path}")
+    except Exception as exc:
+        _abort(exc)
+    finally:
         if provider is not None:
             provider.close()
 

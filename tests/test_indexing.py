@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -13,6 +14,7 @@ from xifeng_rag.domain import RetrievalMode
 from xifeng_rag.indexing import (
     IndexBuildError,
     RankedHit,
+    SentenceTransformersEmbeddingProvider,
     build_hybrid_index,
     build_index,
     build_layered_index,
@@ -26,6 +28,37 @@ from xifeng_rag.indexing import (
 from xifeng_rag.query_rewrite import build_query_variants
 from xifeng_rag.reranking import RerankScore
 from xifeng_rag.storage import ArticleVersionRow, Database, IndexBuildRow
+
+
+def test_sentence_transformers_embedding_loads_from_local_cache_only(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeSentenceTransformer:
+        max_seq_length = 512
+        device = "cpu"
+
+        def __init__(self, model_id: str, **kwargs: object) -> None:
+            captured["model_id"] = model_id
+            captured.update(kwargs)
+
+        def get_embedding_dimension(self) -> int:
+            return 2
+
+        def _first_module(self) -> object:
+            return SimpleNamespace(
+                auto_model=SimpleNamespace(
+                    config=SimpleNamespace(_commit_hash="local-test-revision")
+                )
+            )
+
+    monkeypatch.setattr(
+        "sentence_transformers.SentenceTransformer", FakeSentenceTransformer
+    )
+
+    provider = SentenceTransformersEmbeddingProvider("local-model")
+
+    assert captured["local_files_only"] is True
+    assert provider.metadata["model_revision"] == "local-test-revision"
 
 
 class TwoTopicGenerator:

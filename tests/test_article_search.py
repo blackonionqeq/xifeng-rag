@@ -4,12 +4,20 @@ import json
 from pathlib import Path
 
 import numpy as np
+from typer.testing import CliRunner
 
+from xifeng_rag.article_evaluation import (
+    ArticleDiscoveryDataset,
+    load_article_discovery_dataset,
+    run_article_discovery_evaluation,
+    save_article_discovery_evaluation,
+)
 from xifeng_rag.article_search import (
     build_article_index,
     search_articles,
     selected_article_documents,
 )
+from xifeng_rag.cli import app
 from xifeng_rag.domain import OverviewStatus, RetrievalMode, VersionStatus
 from xifeng_rag.storage import (
     ApprovedManifestRow,
@@ -207,3 +215,158 @@ def test_two_article_discovery_queries_rank_expected_article_first(
             assert results[0].article_id == expected_article_id
             assert results[0].sources == ["bm25", "dense"]
             assert results[0].rrf_score is not None
+
+
+def test_article_discovery_evaluation_runs_three_modes_and_saves_safe_result(
+    database: Database, tmp_path: Path
+) -> None:
+    stage_id, system_id = _article_fixture(database)
+    provider = ThemeEmbeddingProvider()
+    with database.session() as session:
+        outcome = build_article_index(session, tmp_path / "article-indexes", provider)
+
+    dataset_path = tmp_path / "article-discovery.json"
+    dataset_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "queries": [
+                    {
+                        "id": "confirmed-1",
+                        "query": "哪篇文章讨论社会阶段而不是静态阶层",
+                        "expected_article_id": stage_id,
+                        "expected_title": "别把时代位置误解成静态阶层",
+                        "review_status": "confirmed",
+                    },
+                    {
+                        "id": "confirmed-2",
+                        "query": "作者在哪篇文章谈做事的人和商业全局",
+                        "expected_article_id": system_id,
+                        "expected_title": "做事的人如何理解商业全局",
+                        "review_status": "confirmed",
+                    },
+                    {
+                        "id": "draft-1",
+                        "query": "尚未确认的问题",
+                        "expected_article_id": stage_id,
+                        "review_status": "draft",
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    dataset = load_article_discovery_dataset(dataset_path)
+
+    with database.session() as session:
+        result = run_article_discovery_evaluation(
+            session,
+            dataset,
+            dataset_path,
+            provider,
+            build_id=outcome.build_id,
+        )
+
+    assert result.confirmed_question_count == 2
+    assert result.skipped_question_count == 1
+    assert [item.mode for item in result.modes] == [
+        RetrievalMode.BM25,
+        RetrievalMode.DENSE,
+        RetrievalMode.HYBRID,
+    ]
+    for mode in result.modes:
+        assert mode.metrics.evaluated_question_count == 2
+        assert mode.metrics.hit_at_1 == 1.0
+        assert mode.metrics.hit_at_3 == 1.0
+        assert mode.metrics.hit_at_5 == 1.0
+        assert mode.metrics.mrr == 1.0
+        assert all(item.expected_rank == 1 for item in mode.questions)
+
+    saved = save_article_discovery_evaluation(result, tmp_path / "runs")
+    payload = saved.read_text(encoding="utf-8")
+    assert result.run_id in payload
+    assert "不应写入文章级索引的块级概括" not in payload
+    assert "article_summary" not in payload
+
+
+def test_article_discovery_evaluation_marks_target_missing_from_build(
+    database: Database, tmp_path: Path
+) -> None:
+    _article_fixture(database)
+    provider = ThemeEmbeddingProvider()
+    with database.session() as session:
+        outcome = build_article_index(session, tmp_path / "article-indexes", provider)
+    dataset = ArticleDiscoveryDataset.model_validate(
+        {
+            "schema_version": 1,
+            "queries": [
+                {
+                    "id": "missing",
+                    "query": "目标不在索引",
+                    "expected_article_id": "article-not-indexed",
+                    "review_status": "confirmed",
+                }
+            ],
+        }
+    )
+
+    with database.session() as session:
+        result = run_article_discovery_evaluation(
+            session,
+            dataset,
+            tmp_path / "dataset.json",
+            provider,
+            build_id=outcome.build_id,
+        )
+
+    for mode in result.modes:
+        assert mode.metrics.evaluated_question_count == 0
+        assert mode.metrics.incompatible_question_count == 1
+        assert mode.metrics.mrr is None
+        assert mode.questions[0].status == "expected_article_not_in_build"
+
+
+def test_article_discovery_cli_uses_default_dataset_and_persists_result(
+    tmp_path: Path, monkeypatch
+) -> None:
+    data_dir = tmp_path / "data"
+    database = Database(data_dir / "xifeng.sqlite3")
+    database.initialize()
+    stage_id, _ = _article_fixture(database)
+    provider = ThemeEmbeddingProvider()
+    with database.session() as session:
+        build_article_index(session, data_dir / "article_indexes", provider)
+    (data_dir / "article_discovery_queries.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "queries": [
+                    {
+                        "id": "cli-1",
+                        "query": "哪篇文章讨论社会阶段而不是静态阶层",
+                        "expected_article_id": stage_id,
+                        "review_status": "confirmed",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        f"project_root: {tmp_path.as_posix()}\nstorage:\n  data_dir: data\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("xifeng_rag.cli._embedding_provider", lambda settings: provider)
+
+    result = CliRunner().invoke(
+        app, ["--config", str(config), "eval", "article-discovery"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "bm25:" in result.output
+    assert "dense:" in result.output
+    assert "hybrid:" in result.output
+    assert list((data_dir / "evaluation_runs").glob("*.json"))

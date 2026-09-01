@@ -137,8 +137,15 @@ uv run xifeng eval curate
 uv run xifeng eval run <FROZEN_DATASET_ID> --mode hybrid --k 5
 uv run xifeng eval run <FROZEN_DATASET_ID> --mode hybrid --rerank --rerank-candidate-k 20 --k 5
 uv run xifeng eval run <FROZEN_DATASET_ID> --mode hybrid --rerank --rewrite --k 5
+uv run xifeng eval article-discovery
 ```
 
 `eval curate` 启动本地评测集工作台，用于录入问题、编辑参考答案和按原子单元标注证据范围。AI 辅助候选需要在显示外发范围后由用户二次确认，且必须人工接受或修改才能成为金标准。
 
 `eval run` 只接受冻结数据集，并拒绝在不匹配的 Index Build 上运行。pilot、正式 dev/holdout 的范围和实验纪律见[版本路线](../design/roadmap.md)，具体审核标准见[评测问题编写与 AI 草案审核指南](evaluation-question-writing.md)。
+
+`eval article-discovery` 默认读取 Git 忽略的 `data/article_discovery_queries.json`，只运行其中
+人工确认的问题，并在同一个文章级 Index Build 上依次比较 BM25、Dense 和 Hybrid。命令报告
+Hit@1/3/5、MRR、延迟与不在 Build 中的目标文章数，并把不含正文和文章概括的逐题排名保存到
+`data/evaluation_runs/`。可传入其他 JSON 路径、用 `--build` 固定 Build，或用 `--json` 输出
+完整结构化结果。该命令与证据块的 `eval run` 使用不同金标准，二者不计算跨任务总分。

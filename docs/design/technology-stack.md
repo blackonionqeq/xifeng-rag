@@ -57,6 +57,10 @@ V1 基线使用 `sentence-transformers` 加载 `BAAI/bge-base-zh-v1.5`，文档�
 显式模式；当前 34 块 pilot 语料的 Hybrid 默认使用两路 Top-5 和 `rrf_k=60`，不直接混合
 两路原始分数。候选深度来自 dev 集参数实验，语料和评测集扩充后必须重新验证。
 
+业务进程加载 Embedding 模型时固定使用 `local_files_only`，防止搜索、建库或评测期间向模型
+仓库发起隐式版本探测。模型权重必须在明确的环境准备步骤中预先下载；缓存缺失时业务命令直接
+失败并提示准备模型，不临时联网补齐。
+
 V0 已采用 `jieba.Tokenizer` 的独立实例完成本地 search-mode 分词，封装版本为
 `jieba-search-v1`。该选择是可替换的基线，后续分词器对照必须创建新的 Index Profile，
 不得覆盖已有实验索引。
