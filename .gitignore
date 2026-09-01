@@ -45,6 +45,9 @@ config.local.*
 /logs/
 /tmp/
 
+# Skill test workspaces (contain paid-article excerpts, never commit)
+.claude/skills/*-workspace/
+
 # Local databases and index sidecars
 *.db
 *.db-*
