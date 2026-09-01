@@ -17,8 +17,19 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from xifeng_rag.article_overviews import (
+    approve_joint_article_overview,
+    joint_article_overview_for_proposal,
+)
+from xifeng_rag.article_search import (
+    ArticleBuildOutcome,
+    ArticleIndexBuildError,
+    record_article_build_failure,
+)
 from xifeng_rag.chunking import approve_manifest
 from xifeng_rag.domain import (
+    JointArticleSummary,
+    OverviewStatus,
     ProposalStatus,
     TopicProposal,
     VersionStatus,
@@ -32,6 +43,7 @@ from xifeng_rag.indexing import (
 )
 from xifeng_rag.storage import (
     ApprovedManifestRow,
+    ArticleOverviewRow,
     ArticleRow,
     ArticleVersionRow,
     ChunkProposalRow,
@@ -42,6 +54,7 @@ from xifeng_rag.storage import (
 MAX_REQUEST_BYTES = 256 * 1024
 STATIC_DIR = Path(__file__).with_name("review_static")
 IndexBuilder = Callable[[Session, Path], BuildOutcome]
+ArticleIndexBuilder = Callable[[Session, Path], ArticleBuildOutcome]
 
 
 @dataclass(frozen=True)
@@ -62,6 +75,8 @@ class ReviewDocument:
     article_title: str
     paragraphs: list[dict[str, object]]
     topics: list[dict[str, object]]
+    article_summary: str | None = None
+    overview_id: str | None = None
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -69,13 +84,16 @@ class ReviewDocument:
             "article_title": self.article_title,
             "paragraphs": self.paragraphs,
             "topics": self.topics,
+            "article_summary": self.article_summary,
+            "overview_id": self.overview_id,
         }
 
 
 class ApprovalIndexError(RuntimeError):
-    def __init__(self, manifest_id: str, message: str) -> None:
+    def __init__(self, manifest_id: str, message: str, *, stage: str) -> None:
         super().__init__(message)
         self.manifest_id = manifest_id
+        self.stage = stage
 
 
 def load_review_document(
@@ -106,6 +124,9 @@ def load_review_document(
         coverage_errors = validate_topic_coverage(normalized, len(paragraphs))
         if coverage_errors:
             raise ValueError("提案覆盖校验失败：" + "；".join(coverage_errors))
+        overview = joint_article_overview_for_proposal(session, proposal.id)
+        if overview is not None and overview.status != OverviewStatus.PENDING_REVIEW.value:
+            raise ValueError(f"联合文章概括状态不可审核：{overview.status}")
         return ReviewDocument(
             identity=ReviewIdentity(
                 proposal_id=proposal.id,
@@ -120,6 +141,8 @@ def load_review_document(
             article_title=article.title,
             paragraphs=[{"number": item.number, "text": item.text} for item in paragraphs],
             topics=[topic.model_dump() for topic in normalized.topics],
+            article_summary=overview.article_summary if overview is not None else None,
+            overview_id=overview.id if overview is not None else None,
         )
 
 
@@ -128,6 +151,8 @@ def save_review_draft(
     document: ReviewDocument,
     topics_value: object,
     output_dir: Path,
+    *,
+    article_summary_value: object | None = None,
 ) -> Path:
     try:
         proposal = TopicProposal.model_validate({"topics": topics_value})
@@ -138,6 +163,14 @@ def save_review_draft(
         raise ValueError("；".join(coverage_errors))
     if not any(topic.include_in_index for topic in proposal.topics):
         raise ValueError("至少需要保留一个进入索引的话题块")
+    article_summary: str | None = None
+    if document.overview_id is not None:
+        try:
+            article_summary = JointArticleSummary.model_validate(
+                {"article_summary": article_summary_value}
+            ).article_summary
+        except ValidationError as exc:
+            raise ValueError(_validation_message(exc)) from exc
 
     with database.session() as session:
         version = session.get(ArticleVersionRow, document.identity.article_version)
@@ -148,11 +181,19 @@ def save_review_draft(
             raise ValueError(f"提案状态已变化，不能保存草案：{row.status}")
         if version.canonical_hash != document.identity.canonical_content_hash:
             raise ValueError("规范正文哈希已变化，不能保存旧审核草案")
+        if document.overview_id is not None:
+            overview = session.get(ArticleOverviewRow, document.overview_id)
+            if overview is None or overview.proposal_id != row.id:
+                raise ValueError("联合文章概括已不存在或与提案不匹配")
+            if overview.status != OverviewStatus.PENDING_REVIEW.value:
+                raise ValueError(f"文章概括状态已变化，不能保存草案：{overview.status}")
 
     payload = {
         **document.identity.__dict__,
         "topics": [topic.model_dump() for topic in proposal.topics],
     }
+    if article_summary is not None:
+        payload["article_summary"] = article_summary
     output_dir.mkdir(parents=True, exist_ok=True)
     filename = _safe_draft_filename(
         document.identity.article_version, document.identity.proposal_id
@@ -194,6 +235,9 @@ class ReviewApplication:
         output_dir: Path,
         index_dir: Path,
         index_builder: IndexBuilder | None = None,
+        *,
+        article_index_dir: Path | None = None,
+        article_index_builder: ArticleIndexBuilder | None = None,
         token: str | None = None,
     ) -> None:
         self.database = database
@@ -201,6 +245,8 @@ class ReviewApplication:
         self.output_dir = output_dir
         self.index_dir = index_dir
         self.index_builder = index_builder
+        self.article_index_dir = article_index_dir
+        self.article_index_builder = article_index_builder
         self.token = token or secrets.token_urlsafe(32)
         self.draft_path: Path | None = None
         self._approval_lock = threading.Lock()
@@ -210,7 +256,11 @@ class ReviewApplication:
         if not isinstance(body, dict) or "topics" not in body:
             raise ValueError("请求必须包含 topics")
         destination = save_review_draft(
-            self.database, self.document, body["topics"], self.output_dir
+            self.database,
+            self.document,
+            body["topics"],
+            self.output_dir,
+            article_summary_value=body.get("article_summary"),
         )
         self.draft_path = destination
         return destination
@@ -233,6 +283,16 @@ class ReviewApplication:
                     if existing is not None
                     else approve_manifest(session, self.draft_path)
                 )
+                overview_id = None
+                if self.document.overview_id is not None:
+                    draft_payload = json.loads(self.draft_path.read_text(encoding="utf-8"))
+                    overview = approve_joint_article_overview(
+                        session,
+                        proposal_id=self.document.identity.proposal_id,
+                        manifest_id=manifest_id,
+                        article_summary=draft_payload.get("article_summary", ""),
+                    )
+                    overview_id = overview.id
             try:
                 with self.database.session() as session:
                     builder = self.index_builder or build_index
@@ -240,16 +300,40 @@ class ReviewApplication:
             except IndexBuildError as exc:
                 with self.database.session() as session:
                     record_build_failure(session, exc)
-                raise ApprovalIndexError(manifest_id, str(exc)) from exc
+                raise ApprovalIndexError(manifest_id, str(exc), stage="evidence") from exc
             except Exception as exc:
                 message = f"索引更新失败：{type(exc).__name__}"
-                raise ApprovalIndexError(manifest_id, message) from exc
+                raise ApprovalIndexError(manifest_id, message, stage="evidence") from exc
+            article_outcome: ArticleBuildOutcome | None = None
+            if overview_id is not None:
+                if self.article_index_dir is None or self.article_index_builder is None:
+                    raise ApprovalIndexError(
+                        manifest_id,
+                        "文章级索引更新器未配置",
+                        stage="article",
+                    )
+                try:
+                    with self.database.session() as session:
+                        article_outcome = self.article_index_builder(
+                            session, self.article_index_dir
+                        )
+                except ArticleIndexBuildError as exc:
+                    with self.database.session() as session:
+                        record_article_build_failure(session, exc)
+                    raise ApprovalIndexError(
+                        manifest_id, str(exc), stage="article"
+                    ) from exc
+                except Exception as exc:
+                    message = f"文章级索引更新失败：{type(exc).__name__}"
+                    raise ApprovalIndexError(
+                        manifest_id, message, stage="article"
+                    ) from exc
             draft = TopicProposal.model_validate_json(
                 self.draft_path.read_text(encoding="utf-8")
             )
             included_count = sum(topic.include_in_index for topic in draft.topics)
             self._completed = True
-            return {
+            result: dict[str, object] = {
                 "message": "清单已批准，活动索引已更新",
                 "manifest_id": manifest_id,
                 "index_id": outcome.build_id,
@@ -258,6 +342,17 @@ class ReviewApplication:
                 "excluded_count": len(draft.topics) - included_count,
                 "duration_ms": outcome.duration_ms,
             }
+            if article_outcome is not None:
+                result.update(
+                    {
+                        "message": "分块与概括已批准，两个活动索引已更新",
+                        "overview_id": overview_id,
+                        "article_index_id": article_outcome.build_id,
+                        "article_count": article_outcome.article_count,
+                        "article_index_duration_ms": article_outcome.duration_ms,
+                    }
+                )
+            return result
 
     def ensure_shutdown_allowed(self) -> None:
         if not self._completed:
@@ -286,10 +381,19 @@ def run_review_server(
     index_dir: Path,
     index_builder: IndexBuilder | None = None,
     *,
+    article_index_dir: Path | None = None,
+    article_index_builder: ArticleIndexBuilder | None = None,
     open_browser: bool = True,
 ) -> None:
     application = ReviewApplication(
-        database, version_id, proposal_id, output_dir, index_dir, index_builder
+        database,
+        version_id,
+        proposal_id,
+        output_dir,
+        index_dir,
+        index_builder,
+        article_index_dir=article_index_dir,
+        article_index_builder=article_index_builder,
     )
     server, url = create_review_server(application)
     print(f"本地审核地址：{url}")
@@ -380,6 +484,7 @@ def _handler_for(application: ReviewApplication) -> type[BaseHTTPRequestHandler]
                             "error": str(exc),
                             "approval_status": "approved",
                             "manifest_id": exc.manifest_id,
+                            "failed_index": exc.stage,
                             "retryable": True,
                         },
                     )

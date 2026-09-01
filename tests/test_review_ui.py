@@ -9,7 +9,13 @@ from pathlib import Path
 import pytest
 from sqlalchemy import func, select
 
-from xifeng_rag.domain import ProposalStatus, VersionStatus
+from xifeng_rag.article_overviews import JOINT_PROMPT_VERSION
+from xifeng_rag.article_search import (
+    ArticleBuildOutcome,
+    ArticleIndexBuildError,
+    selected_article_documents,
+)
+from xifeng_rag.domain import OverviewStatus, ProposalStatus, VersionStatus
 from xifeng_rag.indexing import build_index
 from xifeng_rag.review_ui import (
     ApprovalIndexError,
@@ -20,6 +26,8 @@ from xifeng_rag.review_ui import (
 )
 from xifeng_rag.storage import (
     ApprovedManifestRow,
+    ArticleIndexBuildRow,
+    ArticleOverviewRow,
     ArticleRow,
     ArticleVersionRow,
     ChunkProposalRow,
@@ -30,7 +38,7 @@ from xifeng_rag.storage import (
 )
 
 
-def _review_fixture(database: Database) -> tuple[str, str]:
+def _review_fixture(database: Database, *, joint: bool = False) -> tuple[str, str]:
     version_id = "version_test"
     proposal_id = "proposal_test"
     topics = {
@@ -90,6 +98,21 @@ def _review_fixture(database: Database) -> tuple[str, str]:
                 topics_json=json.dumps(topics, ensure_ascii=False),
             )
         )
+        if joint:
+            session.flush()
+            session.add(
+                ArticleOverviewRow(
+                    id="overview_test",
+                    version_id=version_id,
+                    proposal_id=proposal_id,
+                    manifest_id=None,
+                    article_summary="模型生成的文章整体概括。",
+                    status=OverviewStatus.PENDING_REVIEW.value,
+                    provider_id="test-provider",
+                    model_id="test-model",
+                    prompt_version=JOINT_PROMPT_VERSION,
+                )
+            )
     return version_id, proposal_id
 
 
@@ -367,3 +390,135 @@ def test_review_page_has_no_remote_resources() -> None:
     assert "关闭审核服务" in combined
     assert "completion-panel" in combined
     assert "/api/shutdown" in combined
+    assert "文章整体概括" in combined
+    assert "article_summary" in combined
+
+
+def test_joint_review_saves_and_approves_overview_with_both_indexes(
+    database: Database, tmp_path: Path
+) -> None:
+    version_id, proposal_id = _review_fixture(database, joint=True)
+    document = load_review_document(database, version_id, proposal_id)
+    assert document.article_summary == "模型生成的文章整体概括。"
+    assert document.overview_id == "overview_test"
+
+    article_calls: list[Path] = []
+
+    def article_builder(session, index_dir):
+        article_calls.append(index_dir)
+        documents = selected_article_documents(session)
+        assert len(documents) == 1
+        assert documents[0].article_summary == "人工修订后的整体概括。"
+        return ArticleBuildOutcome("article-index-test", 1, index_dir, 3)
+
+    application = ReviewApplication(
+        database,
+        version_id,
+        proposal_id,
+        tmp_path / "reviews",
+        tmp_path / "indexes",
+        article_index_dir=tmp_path / "article-indexes",
+        article_index_builder=article_builder,
+    )
+    application.save(
+        {
+            "article_summary": "人工修订后的整体概括。",
+            "topics": application.document.topics,
+        }
+    )
+    result = application.approve_and_build({"confirmed": True})
+
+    assert result["message"] == "分块与概括已批准，两个活动索引已更新"
+    assert result["overview_id"] == "overview_test"
+    assert result["article_index_id"] == "article-index-test"
+    assert article_calls == [tmp_path / "article-indexes"]
+    with database.session() as session:
+        overview = session.get(ArticleOverviewRow, "overview_test")
+        assert overview is not None
+        assert overview.status == OverviewStatus.APPROVED.value
+        assert overview.article_summary == "人工修订后的整体概括。"
+        assert overview.manifest_id == result["manifest_id"]
+
+
+def test_joint_review_rejects_invalid_article_summary(
+    database: Database, tmp_path: Path
+) -> None:
+    version_id, proposal_id = _review_fixture(database, joint=True)
+    document = load_review_document(database, version_id, proposal_id)
+    with pytest.raises(ValueError, match="article_summary"):
+        save_review_draft(
+            database,
+            document,
+            document.topics,
+            tmp_path,
+            article_summary_value="超" * 201,
+        )
+    assert list(tmp_path.glob("*.draft.json")) == []
+
+
+def test_joint_article_index_failure_keeps_old_build_and_retries(
+    database: Database, tmp_path: Path
+) -> None:
+    version_id, proposal_id = _review_fixture(database, joint=True)
+
+    def fail_article_builder(session, index_dir):
+        del session
+        raise ArticleIndexBuildError(
+            "failed-article-index",
+            "article-profile",
+            "snapshot",
+            index_dir / "failed-article-index",
+            "TestFailure",
+            2,
+        )
+
+    application = ReviewApplication(
+        database,
+        version_id,
+        proposal_id,
+        tmp_path / "reviews",
+        tmp_path / "indexes",
+        article_index_dir=tmp_path / "article-indexes",
+        article_index_builder=fail_article_builder,
+    )
+    application.save(
+        {
+            "article_summary": application.document.article_summary,
+            "topics": application.document.topics,
+        }
+    )
+    with database.session() as session:
+        session.add(
+            ArticleIndexBuildRow(
+                id="old-article-index",
+                profile_id="old-profile",
+                corpus_snapshot="old",
+                path=str(tmp_path / "old-article-index"),
+                status="active",
+                active=True,
+            )
+        )
+
+    with pytest.raises(ApprovalIndexError) as exc_info:
+        application.approve_and_build({"confirmed": True})
+    assert exc_info.value.stage == "article"
+    manifest_id = exc_info.value.manifest_id
+    with database.session() as session:
+        old = session.get(ArticleIndexBuildRow, "old-article-index")
+        assert old is not None and old.active
+        overview = session.get(ArticleOverviewRow, "overview_test")
+        assert overview is not None
+        assert overview.status == OverviewStatus.APPROVED.value
+        assert overview.manifest_id == manifest_id
+
+    def succeed_article_builder(session, index_dir):
+        assert len(selected_article_documents(session)) == 1
+        return ArticleBuildOutcome("new-article-index", 1, index_dir, 1)
+
+    application.article_index_builder = succeed_article_builder
+    result = application.approve_and_build({"confirmed": True})
+    assert result["manifest_id"] == manifest_id
+    assert result["article_index_id"] == "new-article-index"
+    with database.session() as session:
+        assert session.scalar(select(func.count()).select_from(ApprovedManifestRow)) == 1
+        assert session.scalar(select(func.count()).select_from(ArticleOverviewRow)) == 1

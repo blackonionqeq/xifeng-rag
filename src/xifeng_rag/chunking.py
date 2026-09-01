@@ -14,6 +14,11 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from xifeng_rag.article_overviews import (
+    approve_joint_article_overview,
+    create_joint_article_overview_draft,
+    joint_article_overview_for_proposal,
+)
 from xifeng_rag.config import ExternalChunkingProfile, OllamaSettings
 from xifeng_rag.corpus import is_explicit_catalog_marker, sha256_text, stable_id
 from xifeng_rag.domain import (
@@ -36,8 +41,8 @@ from xifeng_rag.storage import (
 from xifeng_rag.structured_generation import CodexCliClient as CodexCliClient
 from xifeng_rag.structured_generation import GenerationResult, StructuredGenerator
 
-PROMPT_VERSION = "topic-segmentation-v7-catalog-defense"
-SCHEMA_VERSION = "topic-proposal-v3-end-unit"
+PROMPT_VERSION = "topic-segmentation-v8-joint-overview"
+SCHEMA_VERSION = "topic-proposal-v4-joint-overview"
 
 DEFAULT_SEGMENTATION_INSTRUCTION = """你为一篇付费长文章提出单层话题分块。
 正文已被拆成细粒度语义候选单元。
@@ -57,8 +62,15 @@ DEFAULT_SEGMENTATION_INSTRUCTION = """你为一篇付费长文章提出单层话
    必须与最后一个实质话题分开，不能把目录内容写进正文话题的标题、概括或关键词。
 7. 当前只做单层顶层分块，不输出案例或解释组成的子话题，也不输出父子关系。
 8. end_unit 必须严格递增，最后一个 end_unit 必须等于全文最后一个单元编号。
-9. 只返回 end_unit、简短话题标题、忠实概括和关键词，不复制原文，也不要把概括伪装为
-   作者原话。是否进入索引由用户审核决定，不要输出内容角色或索引决定。"""
+9. 每个话题只返回 end_unit、简短话题标题、忠实概括和关键词，不复制原文，也不要把概括
+   伪装为作者原话。是否进入索引由用户审核决定，不要输出内容角色或索引决定。"""
+
+JOINT_OVERVIEW_INSTRUCTION = """同时根据本次收到的完整原文独立生成 article_summary：
+1. 先说明文章核心判断，再覆盖主要论证路径和对文章反查有帮助的重要延伸主题。
+2. 不要根据 topics 中的块级概括机械拼接；article_summary 与 topics 是对完整原文的并列输出。
+3. 不补充外部事实，不复制或假装引用作者原话。
+4. 使用一段简洁中文，优选 80 至 140 字，最长不超过 200 字，最多 2 至 3 句。
+5. 只返回 JSON Schema 要求的 article_summary 和 topics。"""
 
 
 class TopicCoverageError(ValueError):
@@ -72,6 +84,7 @@ def ollama_topic_schema() -> dict[str, object]:
     return {
         "type": "object",
         "properties": {
+            "article_summary": {"type": "string"},
             "topics": {
                 "type": "array",
                 "items": {
@@ -86,7 +99,7 @@ def ollama_topic_schema() -> dict[str, object]:
                 },
             }
         },
-        "required": ["topics"],
+        "required": ["article_summary", "topics"],
     }
 
 
@@ -283,6 +296,8 @@ def segmentation_prompt(
     selected_instruction = instruction or DEFAULT_SEGMENTATION_INSTRUCTION
     return f"""{selected_instruction}
 
+{JOINT_OVERVIEW_INSTRUCTION}
+
 文章标题：{title}
 
 带编号单元：
@@ -431,6 +446,16 @@ def propose_chunks(
             generation_metadata = dict(result.metadata)
             row.generation_json = json.dumps(generation_metadata, ensure_ascii=False)
             row.diagnostics_json = json.dumps(diagnostics, ensure_ascii=False)
+            session.flush()
+            create_joint_article_overview_draft(
+                session,
+                version_id=version.id,
+                proposal_id=proposal_id,
+                article_summary=generated.article_summary,
+                provider_id=provider_id,
+                model_id=model_id,
+                generation_metadata=generation_metadata,
+            )
             version.status = VersionStatus.PENDING_REVIEW.value
             return ProposalOutcome(
                 proposal_id,
@@ -475,6 +500,7 @@ def export_review(
     if proposal_row is None or article is None:
         raise ValueError("没有可导出的待审核提案")
     proposal = TopicProposal.model_validate_json(proposal_row.topics_json)
+    overview = joint_article_overview_for_proposal(session, proposal_row.id)
     paragraphs = _paragraphs(session, version_id)
     by_number = {item.number: item for item in paragraphs}
     payload = {
@@ -488,12 +514,16 @@ def export_review(
         "schema_version": proposal_row.schema_version,
         "topics": [topic.model_dump() for topic in proposal.topics],
     }
+    if overview is not None:
+        payload["article_summary"] = overview.article_summary
     output_dir.mkdir(parents=True, exist_ok=True)
     stem = f"{version.id}.{proposal_row.id}.review"
     json_path = output_dir / f"{stem}.json"
     md_path = output_dir / f"{stem}.md"
     json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     lines = [f"# {article.title} 分块审核", "", f"版本：`{version.id}`", ""]
+    if overview is not None:
+        lines.extend(["## 文章整体概括（AI）", "", overview.article_summary, ""])
     for index, topic in enumerate(proposal.topics, start=1):
         selected = [
             by_number[number].text
@@ -543,10 +573,25 @@ def approve_manifest(session: Session, manifest_path: Path) -> str:
         raise ValueError("；".join(errors))
     if not any(topic.include_in_index for topic in proposal.topics):
         raise ValueError("全部话题均设为不索引，不能批准空正文索引")
+    overview = joint_article_overview_for_proposal(session, proposal_id)
+    joint_summary: str | None = None
+    if overview is not None:
+        summary_value = payload.get("article_summary")
+        if not isinstance(summary_value, str):
+            raise ValueError("联合分块审核文件缺少文章整体概括")
+        joint_summary = summary_value
     manifest_id = stable_id(
         "manifest", proposal_id, sha256_text(proposal.model_dump_json()), length=32
     )
-    if session.get(ApprovedManifestRow, manifest_id) is not None:
+    existing_manifest = session.get(ApprovedManifestRow, manifest_id)
+    if existing_manifest is not None:
+        if joint_summary is not None:
+            approve_joint_article_overview(
+                session,
+                proposal_id=proposal_id,
+                manifest_id=manifest_id,
+                article_summary=joint_summary,
+            )
         return manifest_id
     manifest = ApprovedManifestRow(
         id=manifest_id,
@@ -556,6 +601,7 @@ def approve_manifest(session: Session, manifest_path: Path) -> str:
         topics_json=proposal.model_dump_json(),
     )
     session.add(manifest)
+    session.flush()
     by_number = {item.number: item for item in paragraphs}
     for topic in proposal.topics:
         if not topic.include_in_index:
@@ -588,6 +634,13 @@ def approve_manifest(session: Session, manifest_path: Path) -> str:
         )
     row.status = ProposalStatus.APPROVED.value
     version.status = VersionStatus.APPROVED.value
+    if joint_summary is not None:
+        approve_joint_article_overview(
+            session,
+            proposal_id=proposal_id,
+            manifest_id=manifest_id,
+            article_summary=joint_summary,
+        )
     return manifest_id
 
 

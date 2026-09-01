@@ -33,6 +33,7 @@ class TwoTopicGenerator:
         return GenerationResult(
             content=json.dumps(
                 {
+                    "article_summary": "文章分别讨论苹果种植和香蕉销售。",
                     "topics": [
                         {
                             "end_unit": 2,
@@ -567,6 +568,7 @@ def test_bm25_build_contains_only_topics_included_by_review(
     )
     response = json.dumps(
         {
+            "article_summary": "文章包含正文与不进入索引的提示内容。",
             "topics": [
                 {
                     "end_unit": 3,

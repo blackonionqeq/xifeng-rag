@@ -3,6 +3,7 @@
 const token = new URLSearchParams(window.location.search).get("token") || "";
 const state = {
   document: null,
+  articleSummary: null,
   topics: [],
   locatedTopicIndex: null,
   draftSaved: false,
@@ -17,6 +18,9 @@ function topicAt(number) {
 }
 
 function syncFields() {
+  if (state.articleSummary !== null) {
+    state.articleSummary = document.getElementById("article-summary").value;
+  }
   document.querySelectorAll(".topic-card").forEach((card, index) => {
     const topic = state.topics[index];
     topic.title = card.querySelector(".topic-title").value;
@@ -87,7 +91,7 @@ function updateActions() {
 
 function lockEditing() {
   document.querySelectorAll(
-    ".topic-title, .topic-summary, .topic-keywords, .topic-index, .merge-button, .boundary"
+    "#article-summary, .topic-title, .topic-summary, .topic-keywords, .topic-index, .merge-button, .boundary"
   ).forEach((element) => { element.disabled = true; });
 }
 
@@ -98,6 +102,10 @@ function showCompletion(payload) {
   document.getElementById("completion-excluded").textContent = `${payload.excluded_count} 块`;
   document.getElementById("completion-manifest").textContent = payload.manifest_id;
   document.getElementById("completion-index").textContent = payload.index_id;
+  if (payload.article_index_id) {
+    document.getElementById("completion-article-index").textContent = payload.article_index_id;
+    document.getElementById("completion-article-index-row").hidden = false;
+  }
   document.getElementById("completion-panel").hidden = false;
 }
 
@@ -178,6 +186,12 @@ async function loadReview() {
   if (!response.ok) throw new Error(payload.error || "加载失败");
   state.document = payload;
   state.topics = structuredClone(payload.topics);
+  if (typeof payload.article_summary === "string") {
+    state.articleSummary = payload.article_summary;
+    document.getElementById("article-summary").value = state.articleSummary;
+    document.getElementById("summary-count").textContent = String(state.articleSummary.length);
+    document.getElementById("overview-editor").hidden = false;
+  }
   document.getElementById("article-title").textContent = payload.article_title;
   document.getElementById("metadata").textContent =
     `${payload.provider_id}/${payload.model_id} · ${payload.article_version} · ${payload.paragraphs.length} 个单元`;
@@ -195,7 +209,10 @@ async function saveDraft() {
     const response = await fetch("/api/draft", {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Review-Token": token },
-      body: JSON.stringify({ topics: state.topics }),
+      body: JSON.stringify({
+        topics: state.topics,
+        article_summary: state.articleSummary,
+      }),
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "保存失败");
@@ -217,6 +234,7 @@ async function approveAndIndex() {
     `总分块：${state.topics.length}`,
     `进入索引：${included}`,
     `排除索引：${excluded}`,
+    ...(state.articleSummary !== null ? ["文章整体概括：一起批准"] : []),
     "批准后清单不可修改。确认批准并更新活动索引？",
   ].join("\n");
   if (!window.confirm(prompt)) return;
@@ -243,7 +261,8 @@ async function approveAndIndex() {
     state.indexed = true;
     lockEditing();
     status.textContent =
-      `${payload.message}：${payload.manifest_id} · ${payload.index_id} · ${payload.chunk_count} 块`;
+      `${payload.message}：${payload.manifest_id} · ${payload.index_id} · ${payload.chunk_count} 块` +
+      (payload.article_index_id ? ` · ${payload.article_index_id}` : "");
     showCompletion(payload);
   } catch (error) {
     status.textContent = error.message;
@@ -279,6 +298,10 @@ document.getElementById("approve-button").addEventListener("click", approveAndIn
 document.getElementById("shutdown-button").addEventListener("click", shutdownReviewServer);
 document.getElementById("topics").addEventListener("input", markDirty);
 document.getElementById("topics").addEventListener("change", markDirty);
+document.getElementById("article-summary").addEventListener("input", (event) => {
+  document.getElementById("summary-count").textContent = String(event.target.value.length);
+  markDirty();
+});
 loadReview().catch((error) => {
   document.getElementById("article-title").textContent = "审核页面加载失败";
   document.getElementById("save-status").textContent = error.message;

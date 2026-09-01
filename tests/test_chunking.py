@@ -22,9 +22,10 @@ from xifeng_rag.chunking import (
 )
 from xifeng_rag.config import CodexCliSettings, ExternalChunkingProfile
 from xifeng_rag.corpus import scan_corpus, stable_id
-from xifeng_rag.domain import ProposalStatus, TopicProposal, VersionStatus
+from xifeng_rag.domain import OverviewStatus, ProposalStatus, TopicProposal, VersionStatus
 from xifeng_rag.storage import (
     ApprovedManifestRow,
+    ArticleOverviewRow,
     ArticleVersionRow,
     ChunkProposalRow,
     Database,
@@ -68,6 +69,7 @@ def _pending_version(database: Database, tmp_path: Path) -> ArticleVersionRow:
 def _valid_response() -> str:
     return json.dumps(
         {
+            "article_summary": "全文先说明起始内容，再讨论后续解释与结论。",
             "topics": [
                 {
                     "end_unit": 2,
@@ -88,10 +90,13 @@ def _valid_response() -> str:
 
 
 def test_ollama_schema_uses_supported_conservative_subset() -> None:
-    schema_text = json.dumps(ollama_topic_schema())
+    schema = ollama_topic_schema()
+    schema_text = json.dumps(schema)
     for unsupported in ("minItems", "maxItems", "minLength", "maxLength", "$ref", "$defs"):
         assert unsupported not in schema_text
-    item_schema = ollama_topic_schema()["properties"]["topics"]["items"]  # type: ignore[index]
+    assert schema["required"] == ["article_summary", "topics"]
+    assert "article_summary" in schema["properties"]  # type: ignore[operator]
+    item_schema = schema["properties"]["topics"]["items"]  # type: ignore[index]
     assert "content_role" not in item_schema["properties"]  # type: ignore[index]
     assert "content_role" not in item_schema["required"]  # type: ignore[index]
 
@@ -102,6 +107,7 @@ def test_semantic_prompt_allows_one_topic_without_size_warnings(
     detached = _pending_version(database, tmp_path)
     response = json.dumps(
         {
+            "article_summary": "全文围绕同一主题完整展开。",
             "topics": [
                 {
                     "end_unit": 5,
@@ -143,6 +149,15 @@ def test_semantic_prompt_allows_one_topic_without_size_warnings(
         assert row is not None
         normalized = TopicProposal.model_validate_json(row.topics_json)
         assert proposal_warnings(normalized, paragraphs) == []
+        overview = session.scalar(
+            select(ArticleOverviewRow).where(
+                ArticleOverviewRow.proposal_id == outcome.proposal_id
+            )
+        )
+        assert overview is not None
+        assert overview.article_summary == "全文围绕同一主题完整展开。"
+        assert overview.status == OverviewStatus.PENDING_REVIEW.value
+        assert overview.manifest_id is None
 
 
 def test_propose_blocks_residual_trailing_catalog_before_generator_call(
@@ -211,6 +226,9 @@ def test_propose_export_edit_and_approve(database: Database, tmp_path: Path) -> 
         json_path, markdown_path = export_review(session, detached.id, tmp_path / "reviews")
         assert markdown_path.is_file()
         payload = json.loads(json_path.read_text(encoding="utf-8"))
+        assert payload["article_summary"] == "全文先说明起始内容，再讨论后续解释与结论。"
+        assert "文章整体概括（AI）" in markdown_path.read_text(encoding="utf-8")
+        payload["article_summary"] = "人工修订后的整体概括。"
         payload["topics"][0]["title"] = "人工修订标题"
         json_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         proposal = session.get(ChunkProposalRow, payload["proposal_id"])
@@ -236,12 +254,22 @@ def test_propose_export_edit_and_approve(database: Database, tmp_path: Path) -> 
         manifest = session.get(ApprovedManifestRow, manifest_id)
         assert manifest is not None and manifest.topics_json is not None
         assert json.loads(manifest.topics_json)["topics"][0]["title"] == "人工修订标题"
+        overview = session.scalar(
+            select(ArticleOverviewRow).where(
+                ArticleOverviewRow.proposal_id == payload["proposal_id"]
+            )
+        )
+        assert overview is not None
+        assert overview.article_summary == "人工修订后的整体概括。"
+        assert overview.status == OverviewStatus.APPROVED.value
+        assert overview.manifest_id == manifest_id
 
 
 def test_invalid_coverage_retries_then_fails(database: Database, tmp_path: Path) -> None:
     detached = _pending_version(database, tmp_path)
     invalid = json.dumps(
         {
+            "article_summary": "这是一份覆盖不完整的错误概括。",
             "topics": [
                 {
                     "end_unit": 4,
@@ -267,6 +295,29 @@ def test_invalid_coverage_retries_then_fails(database: Database, tmp_path: Path)
         assert diagnostics[0]["error_type"] == "TopicCoverageError"
         assert diagnostics[0]["issues"] == ["分块未覆盖到最后单元 5"]
         assert "单元覆盖不合法" in fake.prompts[1]
+
+
+def test_missing_joint_overview_retries_and_uses_valid_summary(
+    database: Database, tmp_path: Path
+) -> None:
+    detached = _pending_version(database, tmp_path)
+    missing = json.loads(_valid_response())
+    missing.pop("article_summary")
+    fake = FakeGenerator([json.dumps(missing, ensure_ascii=False), _valid_response()])
+    with database.session() as session:
+        version = session.get(ArticleVersionRow, detached.id)
+        assert version is not None
+        outcome = propose_chunks(session, version, fake, "fake-model", 1)
+        assert outcome.status == ProposalStatus.PENDING_REVIEW
+        assert fake.calls == 2
+        assert "补齐所有字段" in fake.prompts[1]
+        overview = session.scalar(
+            select(ArticleOverviewRow).where(
+                ArticleOverviewRow.proposal_id == outcome.proposal_id
+            )
+        )
+        assert overview is not None
+        assert overview.article_summary == "全文先说明起始内容，再讨论后续解释与结论。"
 
 
 @pytest.mark.parametrize(
@@ -299,7 +350,14 @@ def test_descending_or_out_of_range_end_units_are_rejected(
         outcome = propose_chunks(
             session,
             version,
-            FakeGenerator([json.dumps({"topics": topics}, ensure_ascii=False)]),
+            FakeGenerator(
+                [
+                    json.dumps(
+                        {"article_summary": "目录角色测试文章概括。", "topics": topics},
+                        ensure_ascii=False,
+                    )
+                ]
+            ),
             "fake-model",
             0,
         )
@@ -315,6 +373,7 @@ def test_generated_content_roles_are_ignored_and_topics_default_to_included(
     detached = _pending_version(database, tmp_path)
     invalid = json.dumps(
         {
+            "article_summary": "正文被划分为两个连续话题。",
             "topics": [
                 {
                     "end_unit": end_unit,
@@ -347,6 +406,7 @@ def test_pending_review_version_can_add_current_prompt_proposal_without_overwrit
     detached = _pending_version(database, tmp_path)
     old_topics = json.dumps(
         {
+            "article_summary": "缓存提案应保留同一次生成的整体概括。",
             "topics": [
                 {
                     "start_paragraph": 1,
@@ -421,6 +481,8 @@ def test_retry_metadata_and_custom_prompt_are_isolated(database: Database, tmp_p
             retry_id="retry-one",
         )
         assert custom in first_generator.prompts[0]
+        assert "根据本次收到的完整原文独立生成 article_summary" in first_generator.prompts[0]
+        assert "不要根据 topics 中的块级概括机械拼接" in first_generator.prompts[0]
         row = session.get(ChunkProposalRow, first.proposal_id)
         assert row is not None
         assert row.provider_id == "deepseek"
@@ -595,6 +657,7 @@ def test_end_units_are_normalized_to_continuous_ranges(database: Database, tmp_p
     detached = _pending_version(database, tmp_path)
     response = json.dumps(
         {
+            "article_summary": "失效文章测试概括。",
             "topics": [
                 {
                     "end_unit": 2,
@@ -700,6 +763,7 @@ def test_excluded_topic_is_audited_but_not_materialized_as_topic_chunk(
     detached = _pending_version(database, tmp_path)
     response = json.dumps(
         {
+            "article_summary": "索引排除测试概括。",
             "topics": [
                 {
                     "end_unit": 4,

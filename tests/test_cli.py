@@ -837,6 +837,8 @@ def test_chunks_review_starts_local_ui_without_approving(tmp_path: Path, monkeyp
     )
     assert result.exit_code == 0
     assert called["args"][1:3] == ("version", "proposal")
-    assert called["kwargs"] == {"open_browser": False}
+    assert called["kwargs"]["open_browser"] is False
+    assert called["kwargs"]["article_index_dir"] == tmp_path / "data" / "article_indexes"
+    assert callable(called["kwargs"]["article_index_builder"])
     with database.session() as session:
         assert session.scalar(select(func.count()).select_from(ChunkProposalRow)) == 1

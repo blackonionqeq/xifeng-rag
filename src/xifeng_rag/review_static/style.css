@@ -44,6 +44,15 @@ main { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(22rem, .9f
 .source-pane, .topics-pane { min-width: 0; }
 .pane-heading { padding: .65rem .8rem; }
 .topics-pane { position: sticky; top: 6.2rem; align-self: start; max-height: calc(100vh - 7.2rem); overflow: auto; }
+.overview-card {
+  margin-bottom: .8rem;
+  padding: 1rem;
+  background: #fffdf5;
+  border: 1px solid #d8c59d;
+  border-radius: .65rem;
+  box-shadow: 0 2px 8px rgba(38, 37, 32, .06);
+}
+.overview-card .pane-heading { padding: 0; }
 .paragraph-wrapper { --accent: #687d72; }
 .paragraph {
   display: grid;

@@ -8,7 +8,13 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from xifeng_rag.corpus import sha256_text, stable_id
-from xifeng_rag.domain import GeneratedArticleOverview, OverviewStatus, Topic, TopicProposal
+from xifeng_rag.domain import (
+    GeneratedArticleOverview,
+    JointArticleSummary,
+    OverviewStatus,
+    Topic,
+    TopicProposal,
+)
 from xifeng_rag.storage import (
     ApprovedManifestRow,
     ArticleOverviewRow,
@@ -21,6 +27,7 @@ from xifeng_rag.structured_generation import StructuredGenerator
 
 PROMPT_VERSION = "article-overview-v2-concise-from-topic-metadata"
 SCHEMA_VERSION = "article-overview-v1"
+JOINT_PROMPT_VERSION = "joint-topic-overview-v1-full-text"
 
 DEFAULT_INSTRUCTION = """请根据文章标题和完整的话题分块元数据，生成一段忠实的文章整体概括。
 
@@ -146,6 +153,98 @@ def propose_article_overview(
     row.article_summary = generated.article_summary
     row.status = OverviewStatus.PENDING_REVIEW.value
     row.generation_json = json.dumps(result.metadata, ensure_ascii=False)
+    return row
+
+
+def create_joint_article_overview_draft(
+    session: Session,
+    *,
+    version_id: str,
+    proposal_id: str,
+    article_summary: str,
+    provider_id: str,
+    model_id: str,
+    generation_metadata: dict[str, object],
+) -> ArticleOverviewRow:
+    """Persist the overview emitted by the same full-text call as a chunk proposal."""
+    validated = JointArticleSummary(article_summary=article_summary)
+    identity = stable_id(
+        "overview",
+        version_id,
+        "proposal",
+        proposal_id,
+        provider_id,
+        model_id,
+        JOINT_PROMPT_VERSION,
+        length=32,
+    )
+    existing = session.get(ArticleOverviewRow, identity)
+    if existing is not None and existing.status in {
+        OverviewStatus.PENDING_REVIEW.value,
+        OverviewStatus.APPROVED.value,
+    }:
+        return existing
+    row = existing or ArticleOverviewRow(
+        id=identity,
+        version_id=version_id,
+        proposal_id=proposal_id,
+        manifest_id=None,
+        article_summary=validated.article_summary,
+        status=OverviewStatus.PENDING_REVIEW.value,
+        provider_id=provider_id,
+        model_id=model_id,
+        prompt_version=JOINT_PROMPT_VERSION,
+    )
+    row.article_summary = validated.article_summary
+    row.status = OverviewStatus.PENDING_REVIEW.value
+    row.generation_json = json.dumps(generation_metadata, ensure_ascii=False)
+    session.add(row)
+    return row
+
+
+def joint_article_overview_for_proposal(
+    session: Session, proposal_id: str
+) -> ArticleOverviewRow | None:
+    return session.scalar(
+        select(ArticleOverviewRow)
+        .where(
+            ArticleOverviewRow.proposal_id == proposal_id,
+            ArticleOverviewRow.prompt_version == JOINT_PROMPT_VERSION,
+        )
+        .order_by(ArticleOverviewRow.created_at.desc(), ArticleOverviewRow.id.desc())
+    )
+
+
+def approve_joint_article_overview(
+    session: Session,
+    *,
+    proposal_id: str,
+    manifest_id: str,
+    article_summary: str,
+) -> ArticleOverviewRow:
+    validated = JointArticleSummary(article_summary=article_summary)
+    row = joint_article_overview_for_proposal(session, proposal_id)
+    if row is None:
+        raise ValueError("分块提案没有联合生成的文章整体概括")
+    if row.status == OverviewStatus.APPROVED.value:
+        if row.manifest_id != manifest_id:
+            raise ValueError("已批准概括绑定的分块清单不一致")
+        return row
+    if row.status != OverviewStatus.PENDING_REVIEW.value:
+        raise ValueError(f"文章概括状态不可批准：{row.status}")
+    session.execute(
+        update(ArticleOverviewRow)
+        .where(
+            ArticleOverviewRow.version_id == row.version_id,
+            ArticleOverviewRow.status == OverviewStatus.APPROVED.value,
+            ArticleOverviewRow.id != row.id,
+        )
+        .values(status=OverviewStatus.SUPERSEDED.value)
+    )
+    row.article_summary = validated.article_summary
+    row.manifest_id = manifest_id
+    row.status = OverviewStatus.APPROVED.value
+    row.approved_at = utcnow()
     return row
 
 

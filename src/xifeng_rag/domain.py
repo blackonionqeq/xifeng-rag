@@ -135,7 +135,13 @@ class GeneratedTopic(BaseModel):
         return self
 
 
-class GeneratedTopicProposal(BaseModel):
+class JointArticleSummary(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    article_summary: str = Field(min_length=1, max_length=200)
+
+
+class GeneratedTopicProposal(JointArticleSummary):
     topics: list[GeneratedTopic] = Field(min_length=1, max_length=20)
 
 

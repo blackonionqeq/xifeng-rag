@@ -94,7 +94,7 @@ from xifeng_rag.query_rewrite import (
     build_query_variants,
 )
 from xifeng_rag.reranking import SentenceTransformersReranker
-from xifeng_rag.review_ui import IndexBuilder, run_review_server
+from xifeng_rag.review_ui import ArticleIndexBuilder, IndexBuilder, run_review_server
 from xifeng_rag.storage import (
     ApprovedManifestRow,
     ArticleOverviewRow,
@@ -214,6 +214,24 @@ def _hybrid_index_builder(settings: Settings) -> IndexBuilder:
         provider = _embedding_provider(settings)
         try:
             return build_hybrid_index(
+                session,
+                index_dir,
+                provider,
+                bm25_candidate_k=settings.retrieval.bm25_candidate_k,
+                dense_candidate_k=settings.retrieval.dense_candidate_k,
+                rrf_k=settings.retrieval.rrf_k,
+            )
+        finally:
+            provider.close()
+
+    return builder
+
+
+def _article_index_builder(settings: Settings) -> ArticleIndexBuilder:
+    def builder(session: Session, index_dir: Path):
+        provider = _embedding_provider(settings)
+        try:
+            return build_article_index(
                 session,
                 index_dir,
                 provider,
@@ -1173,6 +1191,8 @@ def chunks_review(
             runtime.settings.review_dir,
             runtime.settings.index_dir,
             _hybrid_index_builder(runtime.settings),
+            article_index_dir=runtime.settings.article_index_dir,
+            article_index_builder=_article_index_builder(runtime.settings),
             open_browser=not no_open,
         )
     except Exception as exc:

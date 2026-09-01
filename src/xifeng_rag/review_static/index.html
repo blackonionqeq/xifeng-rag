@@ -28,6 +28,16 @@
       <div id="paragraphs"></div>
     </section>
     <aside class="topics-pane" aria-labelledby="topics-heading">
+      <section id="overview-editor" class="overview-card" hidden>
+        <div class="pane-heading">
+          <h2>文章整体概括</h2>
+          <p>AI 草稿，不是作者原话；将与分块一起批准。</p>
+        </div>
+        <label>整体概括
+          <textarea id="article-summary" maxlength="200" rows="6" required></textarea>
+        </label>
+        <p class="metadata"><span id="summary-count">0</span>/200 字</p>
+      </section>
       <div class="pane-heading">
         <h2 id="topics-heading">分块草案</h2>
         <p id="topic-count"></p>
@@ -44,6 +54,9 @@
       <div><dt>排除索引</dt><dd id="completion-excluded"></dd></div>
       <div><dt>批准清单</dt><dd id="completion-manifest"></dd></div>
       <div><dt>活动索引</dt><dd id="completion-index"></dd></div>
+      <div id="completion-article-index-row" hidden>
+        <dt>文章反查索引</dt><dd id="completion-article-index"></dd>
+      </div>
     </dl>
     <button id="shutdown-button" type="button">关闭审核服务</button>
     <p id="shutdown-status" class="completion-status" role="status">
