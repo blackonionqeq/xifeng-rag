@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -198,12 +199,18 @@ def test_discover_rejects_missing_or_empty_directory(tmp_path: Path) -> None:
         discover_markdown(empty)
 
 
-def test_load_external_article_ids_from_source_parent(tmp_path: Path) -> None:
+def test_load_external_article_ids_from_source_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     corpus = tmp_path / "saved_articles"
     corpus.mkdir()
     (tmp_path / "index.json").write_text(
         '{"sn:abc123": {"md_file": "saved_articles/example.md"}, "_updated": "now"}',
         encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "xifeng_rag.corpus.load_html_published_at",
+        lambda _path: pytest.fail("加载文章 ID 时不应读取 HTML"),
     )
     assert load_external_article_ids(corpus) == {"example.md": "sn:abc123"}
 
@@ -229,7 +236,7 @@ def test_load_html_published_at_falls_back_to_readable_time(tmp_path: Path) -> N
 
 
 def test_scan_updates_source_metadata_without_creating_new_version(
-    database: Database, tmp_path: Path
+    database: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     corpus = tmp_path / "saved_articles"
     corpus.mkdir()
@@ -247,9 +254,18 @@ def test_scan_updates_source_metadata_without_creating_new_version(
         }
     }
     catalog.write_text(json.dumps(metadata), encoding="utf-8")
+    html_reads: list[Path] = []
+    original_loader = load_html_published_at
+
+    def tracked_html_loader(path: Path) -> datetime | None:
+        html_reads.append(path)
+        return original_loader(path)
+
+    monkeypatch.setattr("xifeng_rag.corpus.load_html_published_at", tracked_html_loader)
 
     with database.session() as session:
         assert scan_corpus(session, corpus).added == 1
+    assert [path.name for path in html_reads] == ["example.html"]
     with database.session() as session:
         article = session.get(ArticleRow, "sn:metadata")
         assert article is not None
@@ -266,23 +282,32 @@ def test_scan_updates_source_metadata_without_creating_new_version(
     metadata["sn:metadata"]["captured_at"] = "2026-08-21 09:00:00"
     metadata["sn:metadata"]["chinese_char_count"] = 125
     catalog.write_text(json.dumps(metadata), encoding="utf-8")
+    (corpus / "example.html").write_text(
+        "ori_create_time: '1780543738' * 1", encoding="utf-8"
+    )
+    html_reads.clear()
     with database.session() as session:
         summary = scan_corpus(session, corpus)
         assert summary.metadata_updated == 1
         assert summary.unchanged == 0
+    assert [path.name for path in html_reads] == ["example.html"]
     with database.session() as session:
         article = session.get(ArticleRow, "sn:metadata")
         assert article is not None
         assert article.captured_at is not None
         assert article.captured_at.isoformat() == "2026-08-21T09:00:00"
+        assert article.published_at is not None
+        assert article.published_at.isoformat() == "2026-06-04T11:28:58"
         assert article.source_character_count == 125
         assert session.scalar(select(func.count()).select_from(ArticleVersionRow)) == version_count
         assert session.scalar(select(func.count()).select_from(ParagraphRow)) == paragraph_count
 
+    html_reads.clear()
     with database.session() as session:
         summary = scan_corpus(session, corpus)
         assert summary.metadata_updated == 0
         assert summary.unchanged == 1
+    assert html_reads == []
 
 
 def test_scan_classifies_added_unchanged_modified_and_missing(
@@ -305,8 +330,28 @@ def test_scan_classifies_added_unchanged_modified_and_missing(
     second.write_text("# 第二篇\n\n正文。", encoding="utf-8")
     with database.session() as session:
         summary = scan_corpus(session, corpus)
-        assert summary.modified == 1
+        assert summary.modified == 0
+        assert summary.skipped_modified == 1
         assert summary.added == 1
+        first_article = session.scalar(
+            select(ArticleRow).where(ArticleRow.source_path == "first.md")
+        )
+        assert first_article is not None
+        assert first_article.title == "第一篇"
+        first_versions = list(
+            session.scalars(
+                select(ArticleVersionRow).where(
+                    ArticleVersionRow.article_id == first_article.id
+                )
+            ).all()
+        )
+        assert len(first_versions) == 1
+        assert "第一段修改" not in first_versions[0].canonical_text
+
+    with database.session() as session:
+        summary = scan_corpus(session, corpus, include_modified=True)
+        assert summary.modified == 1
+        assert summary.skipped_modified == 0
 
     first.unlink()
     with database.session() as session:
@@ -380,7 +425,7 @@ def test_scan_creates_new_version_when_cleaner_version_changes(
 
     monkeypatch.setattr("xifeng_rag.corpus.CLEANER_VERSION", CLEANER_VERSION)
     with database.session() as session:
-        summary = scan_corpus(session, corpus)
+        summary = scan_corpus(session, corpus, include_modified=True)
         assert summary.modified == 1
         versions = list(
             session.scalars(select(ArticleVersionRow).order_by(ArticleVersionRow.created_at)).all()
@@ -405,7 +450,7 @@ def test_scan_reactivates_unapproved_current_cleaner_version_after_index_switch(
         scan_corpus(session, corpus)
     monkeypatch.setattr("xifeng_rag.corpus.CLEANER_VERSION", CLEANER_VERSION)
     with database.session() as session:
-        scan_corpus(session, corpus)
+        scan_corpus(session, corpus, include_modified=True)
         versions = list(
             session.scalars(select(ArticleVersionRow).order_by(ArticleVersionRow.created_at)).all()
         )
@@ -415,7 +460,7 @@ def test_scan_reactivates_unapproved_current_cleaner_version_after_index_switch(
         versions[1].status = VersionStatus.INACTIVE.value
 
     with database.session() as session:
-        summary = scan_corpus(session, corpus)
+        summary = scan_corpus(session, corpus, include_modified=True)
         assert summary.modified == 1
         assert summary.unchanged == 0
         versions = list(

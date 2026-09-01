@@ -269,6 +269,60 @@ def test_dashboard_http_requires_token_scans_and_shuts_down(
             scanned = json.loads(response.read())
         assert scanned["added"] == 1
         assert scanned["discovered"] == 1
+        assert scanned["skipped_modified"] == 0
+
+        with database.session() as session:
+            initial_versions = session.scalar(
+                select(func.count()).select_from(ArticleVersionRow)
+            )
+        assert initial_versions is not None
+        (corpus / "new.md").write_text(
+            "# 修改后的标题\n\n修改后的自造正文。", encoding="utf-8"
+        )
+        with urllib.request.urlopen(scan_request, timeout=3) as response:
+            skipped = json.loads(response.read())
+        assert skipped["modified"] == 0
+        assert skipped["skipped_modified"] == 1
+        with database.session() as session:
+            assert (
+                session.scalar(select(func.count()).select_from(ArticleVersionRow))
+                == initial_versions
+            )
+            article = session.scalar(select(ArticleRow))
+            assert article is not None
+            assert article.title == "新文章"
+
+        include_modified_request = urllib.request.Request(
+            f"{base}/api/scan",
+            data=json.dumps({"include_modified": True}).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "X-Corpus-Token": "dashboard-secret",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(include_modified_request, timeout=3) as response:
+            included = json.loads(response.read())
+        assert included["modified"] == 1
+        assert included["skipped_modified"] == 0
+        with database.session() as session:
+            assert (
+                session.scalar(select(func.count()).select_from(ArticleVersionRow))
+                == initial_versions + 1
+            )
+
+        invalid_scan_request = urllib.request.Request(
+            f"{base}/api/scan",
+            data=json.dumps({"include_modified": "yes"}).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "X-Corpus-Token": "dashboard-secret",
+            },
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(invalid_scan_request, timeout=2)
+        assert exc_info.value.code == 400
 
         articles_request = urllib.request.Request(
             f"{base}/api/articles", headers={"X-Corpus-Token": "dashboard-secret"}
@@ -314,6 +368,8 @@ def test_dashboard_page_has_no_remote_resources() -> None:
     assert "http://" not in combined
     assert "https://" not in combined
     assert "扫描语料更新" in combined
+    assert "同时导入已修改文章" in combined
+    assert "include_modified" in combined
     assert "/api/scan" in combined
     assert "/api/reviews" in combined
     assert "X-Corpus-Token" in combined

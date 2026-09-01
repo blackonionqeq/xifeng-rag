@@ -14,6 +14,10 @@
       <p id="summary-line" class="muted">正在读取本地数据库…</p>
     </div>
     <div class="header-actions">
+      <label class="scan-option" title="开启后，正文已变化的既有文章会创建或切换版本，并需要重新分块">
+        <input id="include-modified" type="checkbox">
+        同时导入已修改文章
+      </label>
       <button id="scan-button" type="button">扫描语料更新</button>
       <button id="refresh-button" class="secondary" type="button">刷新列表</button>
       <button id="shutdown-button" class="quiet" type="button">关闭服务</button>

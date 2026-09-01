@@ -82,6 +82,7 @@ class ScanSummary:
     unmatched_excluded_ids: tuple[str, ...]
     added: int
     modified: int
+    skipped_modified: int
     metadata_updated: int
     unchanged: int
     missing: int
@@ -396,6 +397,8 @@ def load_html_published_at(path: Path) -> datetime | None:
 
 def load_external_article_metadata(
     source_dir: Path,
+    *,
+    include_published_at: bool = True,
 ) -> dict[str, ExternalArticleMetadata]:
     candidates = [source_dir / "index.json", source_dir.parent / "index.json"]
     index_path = next((path for path in candidates if path.is_file()), None)
@@ -419,7 +422,11 @@ def load_external_article_metadata(
         mapping[filename] = ExternalArticleMetadata(
             article_id=key,
             captured_at=_optional_datetime(metadata.get("captured_at")),
-            published_at=load_html_published_at(source_dir / Path(filename).with_suffix(".html")),
+            published_at=(
+                load_html_published_at(source_dir / Path(filename).with_suffix(".html"))
+                if include_published_at
+                else None
+            ),
             character_count=(
                 character_count
                 if isinstance(character_count, int) and not isinstance(character_count, bool)
@@ -432,7 +439,9 @@ def load_external_article_metadata(
 def load_external_article_ids(source_dir: Path) -> dict[str, str]:
     return {
         filename: metadata.article_id
-        for filename, metadata in load_external_article_metadata(source_dir).items()
+        for filename, metadata in load_external_article_metadata(
+            source_dir, include_published_at=False
+        ).items()
     }
 
 
@@ -440,14 +449,17 @@ def scan_corpus(
     session: Session,
     source_dir: Path,
     excluded_article_ids: list[str] | tuple[str, ...] = (),
+    *,
+    include_modified: bool = False,
 ) -> ScanSummary:
     files = discover_markdown(source_dir)
-    external_metadata = load_external_article_metadata(source_dir)
     known = {row.source_path: row for row in session.scalars(select(ArticleRow)).all()}
+    external_metadata = load_external_article_metadata(source_dir, include_published_at=False)
     seen: set[str] = set()
     excluded_ids = frozenset(excluded_article_ids)
     matched_excluded_ids: set[str] = set()
-    added = modified = metadata_updated = unchanged = excluded = needs_review = 0
+    added = modified = skipped_modified = 0
+    metadata_updated = unchanged = excluded = needs_review = 0
 
     for path in files:
         source_path = path.relative_to(source_dir).as_posix()
@@ -479,6 +491,25 @@ def scan_corpus(
             continue
         source_stat = path.stat()
         source_modified_at = datetime.fromtimestamp(source_stat.st_mtime, UTC).replace(tzinfo=None)
+        if metadata is not None:
+            should_load_published_at = (
+                known_article is None
+                or known_article.captured_at != metadata.captured_at
+                or known_article.source_modified_at != source_modified_at
+                or known_article.source_size_bytes != source_stat.st_size
+                or known_article.source_character_count != metadata.character_count
+            )
+            if should_load_published_at:
+                published_at = load_html_published_at(path.with_suffix(".html"))
+            else:
+                assert known_article is not None
+                published_at = known_article.published_at
+            metadata = ExternalArticleMetadata(
+                article_id=metadata.article_id,
+                captured_at=metadata.captured_at,
+                published_at=published_at,
+                character_count=metadata.character_count,
+            )
         markdown = path.read_text(encoding="utf-8-sig")
         source_hash = sha256_text(markdown)
         cleaned = clean_markdown(markdown)
@@ -510,6 +541,42 @@ def scan_corpus(
                 or article.source_character_count
                 != (metadata.character_count if metadata is not None else None)
             )
+
+        active_version = session.scalar(
+            select(ArticleVersionRow)
+            .where(ArticleVersionRow.article_id == article.id, ArticleVersionRow.active.is_(True))
+            .order_by(ArticleVersionRow.created_at.desc())
+        )
+        version_id = stable_id("version", article.id, canonical_hash, CLEANER_VERSION)
+        existing_version = session.get(ArticleVersionRow, version_id)
+        needs_version_import = known_article is not None and (
+            (
+                active_version is not None
+                and not (
+                    active_version.source_hash == source_hash
+                    and active_version.cleaner_version == CLEANER_VERSION
+                )
+                and not (
+                    active_version.canonical_hash == canonical_hash
+                    and active_version.cleaner_version == CLEANER_VERSION
+                )
+            )
+            or (active_version is None and existing_version is None)
+        )
+        if needs_version_import and not include_modified:
+            article.active = True
+            article.captured_at = metadata.captured_at if metadata is not None else None
+            article.published_at = metadata.published_at if metadata is not None else None
+            article.source_modified_at = source_modified_at
+            article.source_size_bytes = source_stat.st_size
+            article.source_character_count = (
+                metadata.character_count if metadata is not None else None
+            )
+            article.metadata_synced_at = utcnow()
+            skipped_modified += 1
+            continue
+
+        if known_article is not None:
             article.active = True
             article.title = extract_title(markdown, path.stem)
             article.captured_at = metadata.captured_at if metadata is not None else None
@@ -521,11 +588,6 @@ def scan_corpus(
             )
             article.metadata_synced_at = utcnow()
 
-        active_version = session.scalar(
-            select(ArticleVersionRow)
-            .where(ArticleVersionRow.article_id == article.id, ArticleVersionRow.active.is_(True))
-            .order_by(ArticleVersionRow.created_at.desc())
-        )
         if (
             active_version is not None
             and active_version.source_hash == source_hash
@@ -549,7 +611,6 @@ def scan_corpus(
             continue
         if active_version is not None:
             modified += 1
-        version_id = stable_id("version", article.id, canonical_hash, CLEANER_VERSION)
         replaceable_statuses = {
             VersionStatus.NEEDS_CLEANUP_REVIEW.value,
             VersionStatus.PENDING_CHUNKING.value,
@@ -562,7 +623,6 @@ def scan_corpus(
         ):
             active_version.active = False
             active_version.status = VersionStatus.INACTIVE.value
-        existing_version = session.get(ArticleVersionRow, version_id)
         if existing_version is not None:
             existing_version.active = True
             existing_version.source_hash = source_hash
@@ -637,6 +697,7 @@ def scan_corpus(
         unmatched_excluded_ids=tuple(sorted(excluded_ids - matched_excluded_ids)),
         added=added,
         modified=modified,
+        skipped_modified=skipped_modified,
         metadata_updated=metadata_updated,
         unchanged=unchanged,
         missing=len(missing_paths),

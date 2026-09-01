@@ -49,7 +49,10 @@ uv run xifeng search "要检索的问题" --mode hybrid --rerank --top-k 5
 uv run xifeng ask "要研究的问题" --mode hybrid --rerank
 ```
 
-首次导入时，`corpus scan` 会显示解析后的绝对语料路径和文章数。清洗有歧义的文章必须先人工裁决，只有已批准版本能够进入索引。`ask` 会在调用外部 Generator 前显示外发范围；没有证据时在本地直接拒答。
+首次导入时，`corpus scan` 会显示解析后的绝对语料路径和文章数。默认扫描只导入新增文章，
+既有文章的正文变化只报告不落库；确认需要重新分块时使用 `corpus scan --include-modified`。
+清洗有歧义的文章必须先人工裁决，只有已批准版本能够进入索引。`ask` 会在调用外部 Generator
+前显示外发范围；没有证据时在本地直接拒答。
 
 完整的导入、审核、实验检索、文章反查和评测命令见 [CLI 工作流指南](docs/guides/cli-workflows.md)。DeepSeek 配置见 [Generator 快速使用](docs/guides/deepseek-generator-setup.md)，评测题编写见[评测问题与 AI 草案审核指南](docs/guides/evaluation-question-writing.md)。
 

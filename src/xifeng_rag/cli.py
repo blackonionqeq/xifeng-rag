@@ -518,7 +518,16 @@ def doctor(ctx: typer.Context) -> None:
 
 
 @corpus_app.command("scan")
-def corpus_scan(ctx: typer.Context) -> None:
+def corpus_scan(
+    ctx: typer.Context,
+    include_modified: Annotated[
+        bool,
+        typer.Option(
+            "--include-modified",
+            help="同时导入正文已变化的既有文章；默认只报告并跳过",
+        ),
+    ] = False,
+) -> None:
     """只读扫描顶层 Markdown 并更新增量状态。"""
     runtime = _runtime(ctx)
     try:
@@ -530,9 +539,12 @@ def corpus_scan(ctx: typer.Context) -> None:
                 session,
                 runtime.settings.source_dir,
                 runtime.settings.corpus.excluded_article_ids,
+                include_modified=include_modified,
             )
         typer.echo(
-            f"排除 {summary.excluded}，新增 {summary.added}，修改 {summary.modified}，"
+            f"排除 {summary.excluded}，新增 {summary.added}，"
+            f"已导入正文更新 {summary.modified}，"
+            f"已跳过正文更新 {summary.skipped_modified}，"
             f"元数据更新 {summary.metadata_updated}，未变化 {summary.unchanged}，"
             f"缺失 {summary.missing}，待清洗审核 {summary.needs_cleanup_review}"
         )

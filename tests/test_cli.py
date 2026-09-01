@@ -42,7 +42,35 @@ def test_corpus_scan_reports_resolved_path_and_count_without_body(
     assert str(corpus.resolve()) in result.output
     assert "发现文章：1" in result.output
     assert "排除 0" in result.output
+    assert "已跳过正文更新 0" in result.output
     assert private_body not in result.output
+
+    database = Database(tmp_path / "data" / "xifeng.sqlite3")
+    with database.session() as session:
+        initial_versions = session.scalar(select(func.count()).select_from(ArticleVersionRow))
+    assert initial_versions is not None
+
+    (corpus / "one.md").write_text(
+        f"# 修改后的标题\n\n{private_body}，正文发生变化。", encoding="utf-8"
+    )
+    skipped = runner.invoke(app, ["--config", str(config), "corpus", "scan"])
+    assert skipped.exit_code == 0
+    assert "已导入正文更新 0" in skipped.output
+    assert "已跳过正文更新 1" in skipped.output
+    with database.session() as session:
+        version_count = session.scalar(select(func.count()).select_from(ArticleVersionRow))
+        assert version_count == initial_versions
+
+    included = runner.invoke(
+        app,
+        ["--config", str(config), "corpus", "scan", "--include-modified"],
+    )
+    assert included.exit_code == 0
+    assert "已导入正文更新 1" in included.output
+    assert "已跳过正文更新 0" in included.output
+    with database.session() as session:
+        version_count = session.scalar(select(func.count()).select_from(ArticleVersionRow))
+        assert version_count == initial_versions + 1
 
 
 def test_cleanup_dry_run_reports_only_metadata_and_does_not_create_versions(

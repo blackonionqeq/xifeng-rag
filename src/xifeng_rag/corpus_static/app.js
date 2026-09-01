@@ -273,23 +273,28 @@ async function scanCorpus() {
   if (state.busy) return;
   state.busy = true;
   const button = document.getElementById("scan-button");
+  const includeModified = document.getElementById("include-modified");
   const status = document.getElementById("operation-status");
   button.disabled = true;
+  includeModified.disabled = true;
   button.textContent = "正在扫描…";
   status.textContent = "正在只读扫描规范 Markdown 并更新本地状态…";
   try {
     const response = await request("/api/scan", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}),
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ include_modified: includeModified.checked }),
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "扫描失败");
-    status.textContent = `扫描完成：发现 ${payload.discovered}，排除 ${payload.excluded}，新增 ${payload.added}，正文修改 ${payload.modified}，元数据更新 ${payload.metadata_updated}，未变化 ${payload.unchanged}，缺失 ${payload.missing}，待清洗审核 ${payload.needs_cleanup_review}`;
+    status.textContent = `扫描完成：发现 ${payload.discovered}，排除 ${payload.excluded}，新增 ${payload.added}，已导入正文更新 ${payload.modified}，已跳过正文更新 ${payload.skipped_modified}，元数据更新 ${payload.metadata_updated}，未变化 ${payload.unchanged}，缺失 ${payload.missing}，待清洗审核 ${payload.needs_cleanup_review}`;
     await loadArticles();
   } catch (error) {
     status.textContent = error.message;
   } finally {
     state.busy = false;
     button.disabled = false;
+    includeModified.disabled = false;
     button.textContent = "扫描语料更新";
   }
 }

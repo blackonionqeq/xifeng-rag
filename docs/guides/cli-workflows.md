@@ -9,9 +9,15 @@ uv run xifeng doctor
 uv run xifeng corpus manage
 uv run xifeng corpus cleanup-dry-run
 uv run xifeng corpus scan
+# 确认需要为既有文章建立新版本时：
+uv run xifeng corpus scan --include-modified
 ```
 
-`corpus scan` 在首次导入前显示解析后的绝对语料路径和文章数。清洗有歧义的文章会停在 `needs_cleanup_review`，需通过 `corpus resolve-cleanup` 人工裁决。
+`corpus scan` 在首次导入前显示解析后的绝对语料路径和文章数。默认只导入新增文章；既有文章
+的规范正文发生变化时只报告“已跳过正文更新”，不创建或切换版本，也不会触发重新分块。
+明确接受这些成本时才使用 `--include-modified`。管理页对应选项“同时导入已修改文章”默认
+不勾选。纯元数据更新和来源缺失标记不受此开关影响。清洗有歧义的文章会停在
+`needs_cleanup_review`，需通过 `corpus resolve-cleanup` 人工裁决。
 
 `corpus cleanup-dry-run` 只读比较活动版本与当前清洗规则，报告截断位置、字符数和链接计数，不显示正文或 URL，也不修改外部语料和业务数据。
 

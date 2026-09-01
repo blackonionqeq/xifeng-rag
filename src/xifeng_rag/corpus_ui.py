@@ -285,14 +285,17 @@ class CorpusDashboardApplication:
                 "status": row.status,
             }
 
-    def scan(self) -> dict[str, object]:
+    def scan(self, *, include_modified: bool = False) -> dict[str, object]:
         if not self._scan_lock.acquire(blocking=False):
             raise ScanInProgressError("已有语料扫描正在进行")
         try:
             discovered = len(discover_markdown(self.source_dir))
             with self.database.session() as session:
                 summary = scan_corpus(
-                    session, self.source_dir, self.excluded_article_ids
+                    session,
+                    self.source_dir,
+                    self.excluded_article_ids,
+                    include_modified=include_modified,
                 )
             return {
                 "source_dir": str(summary.source_dir),
@@ -300,6 +303,7 @@ class CorpusDashboardApplication:
                 "excluded": summary.excluded,
                 "added": summary.added,
                 "modified": summary.modified,
+                "skipped_modified": summary.skipped_modified,
                 "metadata_updated": summary.metadata_updated,
                 "unchanged": summary.unchanged,
                 "missing": summary.missing,
@@ -461,8 +465,18 @@ def _handler_for(
                 self._json_error(HTTPStatus.BAD_REQUEST, str(exc))
                 return
             if parsed.path == "/api/scan":
+                if not isinstance(body, dict):
+                    self._json_error(HTTPStatus.BAD_REQUEST, "扫描请求必须是对象")
+                    return
+                include_modified = body.get("include_modified", False)
+                if not isinstance(include_modified, bool):
+                    self._json_error(
+                        HTTPStatus.BAD_REQUEST,
+                        "include_modified 必须是布尔值",
+                    )
+                    return
                 try:
-                    result = application.scan()
+                    result = application.scan(include_modified=include_modified)
                 except ScanInProgressError as exc:
                     self._json_error(HTTPStatus.CONFLICT, str(exc))
                     return

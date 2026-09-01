@@ -21,7 +21,9 @@ h1, p { margin-top: 0; }
 h1 { margin-bottom: .35rem; font-family: Georgia, "Songti SC", serif; font-size: 1.7rem; }
 .eyebrow { margin-bottom: .25rem; color: #94653d; font-size: .72rem; font-weight: 700; letter-spacing: .14em; }
 .muted { color: #747a75; }
-.header-actions { display: flex; gap: .65rem; }
+.header-actions { display: flex; gap: .65rem; align-items: center; }
+.scan-option { display: flex; gap: .4rem; align-items: center; white-space: nowrap; }
+.scan-option input { width: auto; margin: 0; }
 button {
   border: 0;
   border-radius: .45rem;
