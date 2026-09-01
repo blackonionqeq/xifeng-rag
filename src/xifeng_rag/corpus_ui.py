@@ -19,6 +19,7 @@ from xifeng_rag.article_overviews import approve_article_overview
 from xifeng_rag.corpus import discover_markdown, scan_corpus
 from xifeng_rag.domain import OverviewStatus, ProposalStatus, VersionStatus
 from xifeng_rag.review_ui import (
+    ArticleIndexBuilder,
     IndexBuilder,
     ReviewApplication,
     ReviewHTTPServer,
@@ -54,6 +55,9 @@ class CorpusDashboardApplication:
         review_dir: Path,
         index_dir: Path,
         index_builder: IndexBuilder | None = None,
+        *,
+        article_index_dir: Path | None = None,
+        article_index_builder: ArticleIndexBuilder | None = None,
         token: str | None = None,
     ) -> None:
         self.database = database
@@ -62,6 +66,8 @@ class CorpusDashboardApplication:
         self.review_dir = review_dir
         self.index_dir = index_dir
         self.index_builder = index_builder
+        self.article_index_dir = article_index_dir
+        self.article_index_builder = article_index_builder
         self.token = token or secrets.token_urlsafe(32)
         self._scan_lock = threading.Lock()
         self._child_lock = threading.Lock()
@@ -337,6 +343,8 @@ class CorpusDashboardApplication:
             self.review_dir,
             self.index_dir,
             self.index_builder,
+            article_index_dir=self.article_index_dir,
+            article_index_builder=self.article_index_builder,
         )
         server, url = create_review_server(application)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -376,10 +384,19 @@ def run_corpus_dashboard(
     index_dir: Path,
     index_builder: IndexBuilder | None = None,
     *,
+    article_index_dir: Path | None = None,
+    article_index_builder: ArticleIndexBuilder | None = None,
     open_browser: bool = True,
 ) -> None:
     application = CorpusDashboardApplication(
-        database, source_dir, excluded_article_ids, review_dir, index_dir, index_builder
+        database,
+        source_dir,
+        excluded_article_ids,
+        review_dir,
+        index_dir,
+        index_builder,
+        article_index_dir=article_index_dir,
+        article_index_builder=article_index_builder,
     )
     server, url = create_corpus_dashboard_server(application)
     print(f"本地语料管理地址：{url}")

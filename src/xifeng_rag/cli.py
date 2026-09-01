@@ -559,6 +559,8 @@ def corpus_manage(
             runtime.settings.review_dir,
             runtime.settings.index_dir,
             _hybrid_index_builder(runtime.settings),
+            article_index_dir=runtime.settings.article_index_dir,
+            article_index_builder=_article_index_builder(runtime.settings),
             open_browser=not no_open,
         )
     except Exception as exc:

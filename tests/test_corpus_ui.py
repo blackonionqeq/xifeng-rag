@@ -11,6 +11,7 @@ from typing import Any, cast
 import pytest
 from sqlalchemy import func, select
 
+from xifeng_rag.article_search import ArticleBuildOutcome
 from xifeng_rag.corpus import scan_corpus
 from xifeng_rag.corpus_ui import (
     CorpusDashboardApplication,
@@ -181,11 +182,43 @@ def test_dashboard_aggregates_latest_and_indexed_versions(
 
 
 def test_dashboard_starts_only_current_pending_review(
-    database: Database, tmp_path: Path
+    database: Database, tmp_path: Path, monkeypatch
 ) -> None:
     corpus, indexed_version_id, latest_version_id = _dashboard_fixture(database, tmp_path)
+    captured = {}
+
+    class FakeReviewApplication:
+        def __init__(self, *args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+
+    class FakeReviewServer:
+        def serve_forever(self):
+            return None
+
+        def shutdown(self):
+            return None
+
+        def server_close(self):
+            return None
+
+    monkeypatch.setattr("xifeng_rag.corpus_ui.ReviewApplication", FakeReviewApplication)
+    monkeypatch.setattr(
+        "xifeng_rag.corpus_ui.create_review_server",
+        lambda application: (FakeReviewServer(), "http://127.0.0.1:12345/?token=test"),
+    )
+    def article_builder(session, path):
+        del session
+        return ArticleBuildOutcome("article-index-test", 1, path, 1)
+
     application = CorpusDashboardApplication(
-        database, corpus, (), tmp_path / "reviews", tmp_path / "indexes"
+        database,
+        corpus,
+        (),
+        tmp_path / "reviews",
+        tmp_path / "indexes",
+        article_index_dir=tmp_path / "article-indexes",
+        article_index_builder=article_builder,
     )
     with pytest.raises(ValueError, match="文章版本已不处于待审核状态"):
         application.start_review(
@@ -195,6 +228,8 @@ def test_dashboard_starts_only_current_pending_review(
         {"version_id": latest_version_id, "proposal_id": "proposal_pending"}
     )
     assert str(result["url"]).startswith("http://127.0.0.1:")
+    assert captured["kwargs"]["article_index_dir"] == tmp_path / "article-indexes"
+    assert captured["kwargs"]["article_index_builder"] is article_builder
     application.shutdown_children()
 
 

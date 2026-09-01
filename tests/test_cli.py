@@ -110,7 +110,9 @@ def test_corpus_manage_starts_local_dashboard(tmp_path: Path, monkeypatch) -> No
     )
     assert result.exit_code == 0
     assert called["args"][1] == corpus.resolve()
-    assert called["kwargs"] == {"open_browser": False}
+    assert called["kwargs"]["article_index_dir"] == tmp_path / "data" / "article_indexes"
+    assert callable(called["kwargs"]["article_index_builder"])
+    assert called["kwargs"]["open_browser"] is False
 
 
 def test_eval_curate_starts_local_workspace(tmp_path: Path, monkeypatch) -> None:
