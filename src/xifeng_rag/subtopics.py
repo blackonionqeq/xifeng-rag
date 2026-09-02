@@ -22,7 +22,7 @@ from xifeng_rag.storage import (
 )
 from xifeng_rag.structured_generation import StructuredGenerator
 
-PROMPT_VERSION = "optional-subtopics-v3-unbounded"
+PROMPT_VERSION = "optional-subtopics-v4-min-span"
 SCHEMA_VERSION = "optional-subtopics-v1"
 
 
@@ -122,7 +122,9 @@ def generation_prompt(
 细话题是用户可能单独记住并用于反查文章的具体案例、局部概念、机制或特殊表述，也可以返回空
 subtopics。父话题和整篇文章都不设细话题业务数量上限；只保留有检索辨识度的候选，不要为了
 凑数逐段复述，也不要求覆盖父话题。相邻、范围重叠或表达同一机制的候选
-必须合并为一个细话题。每个细话题只返回简短 title、精确 start_unit/end_unit 和一句忠实
+必须合并为一个细话题。细话题范围不得少于 10 个单元；不足 10 个单元的候选应并入相邻或
+同机制的细话题，无合适合并对象且辨识度不足时直接丢弃，避免长文章产生几十个过碎的细话题。
+每个细话题只返回简短 title、精确 start_unit/end_unit 和一句忠实
 summary，不复制长篇原文，不补充外部事实。每个范围必须完全位于对应父话题内。只处理下面
 列出的父话题，并原样返回父范围和标题。
 

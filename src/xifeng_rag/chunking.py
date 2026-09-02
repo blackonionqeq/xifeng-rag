@@ -42,7 +42,7 @@ from xifeng_rag.structured_generation import CodexCliClient as CodexCliClient
 from xifeng_rag.structured_generation import GenerationResult, StructuredGenerator
 from xifeng_rag.subtopics import create_joint_approved_subtopics
 
-PROMPT_VERSION = "topic-segmentation-v10-unbounded-subtopics"
+PROMPT_VERSION = "topic-segmentation-v11-subtopic-min-span"
 SCHEMA_VERSION = "topic-proposal-v4-joint-overview"
 
 DEFAULT_SEGMENTATION_INSTRUCTION = """你为一篇付费长文章提出单层话题分块。
@@ -64,7 +64,9 @@ DEFAULT_SEGMENTATION_INSTRUCTION = """你为一篇付费长文章提出单层话
 7. 当前只做单层顶层分块。每个顶层话题可以额外输出可选 subtopics，用来记录用户可能单独
    记住的具体案例、局部概念、机制或特殊表述，也可以返回空数组。父话题和整篇文章都不设
    细话题业务数量上限；只保留有检索辨识度的候选，不要为了凑数逐段概括。
-   相邻、范围重叠或表达同一机制的候选必须合并为一个细话题。
+   相邻、范围重叠或表达同一机制的候选必须合并为一个细话题。细话题范围不得少于 10 个单元；
+   不足 10 个单元的候选应并入相邻或同机制的细话题，无合适合并对象且辨识度不足时直接
+   丢弃，避免长文章产生几十个过碎的细话题。
 8. end_unit 必须严格递增，最后一个 end_unit 必须等于全文最后一个单元编号。
 9. 每个细话题只返回简短 title、精确 start_unit/end_unit 和一句忠实 summary，范围必须位于
    所属顶层话题内。顶层和细话题都不复制原文，也不要把概括伪装为作者原话。

@@ -201,6 +201,7 @@ def test_semantic_prompt_allows_one_topic_without_size_warnings(
         assert "父话题和整篇文章都不设" in prompt
         assert "细话题业务数量上限" in prompt
         assert "相邻、范围重叠或表达同一机制的候选必须合并" in prompt
+        assert "细话题范围不得少于 10 个单元" in prompt
         assert "文末文章目录" in prompt
         assert "是否进入索引由用户审核决定" in prompt
         assert "不要输出内容角色" in prompt

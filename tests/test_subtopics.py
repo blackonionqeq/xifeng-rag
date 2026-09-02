@@ -224,6 +224,7 @@ def test_generation_prompt_does_not_require_full_coverage(database: Database) ->
     assert "最多返回 4 个细话题" not in prompt
     assert "父话题和整篇文章都不设细话题业务数量上限" in prompt
     assert "相邻、范围重叠或表达同一机制的候选\n必须合并" in prompt
+    assert "细话题范围不得少于 10 个单元" in prompt
     assert "不得修改" in prompt
 
 

@@ -5,12 +5,12 @@ import secrets
 import threading
 import webbrowser
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 from pydantic import ValidationError
@@ -58,6 +58,14 @@ STATIC_DIR = Path(__file__).with_name("corpus_static")
 
 class ScanInProgressError(RuntimeError):
     pass
+
+
+class OriginalTextDetails(TypedDict):
+    article_id: str
+    article_title: str
+    version_id: str
+    character_count: int
+    canonical_text: str
 
 
 def _isoformat(value: datetime | None) -> str | None:
@@ -374,7 +382,7 @@ class CorpusDashboardApplication:
             },
         }
 
-    def original_text_details(self, article_id: str) -> dict[str, object]:
+    def original_text_details(self, article_id: str) -> OriginalTextDetails:
         if not article_id:
             raise ValueError("必须提供文章 ID")
         with self.database.session() as session:
@@ -915,7 +923,7 @@ def _handler_for(
             self.end_headers()
             self.wfile.write(content)
 
-        def _json_response(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
+        def _json_response(self, status: HTTPStatus, payload: Mapping[str, Any]) -> None:
             content = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             self.send_response(status)
             self._security_headers("application/json; charset=utf-8")
