@@ -110,8 +110,24 @@ dialog::backdrop { background: rgb(32 37 34 / 42%); }
 }
 .dialog-actions { display: flex; justify-content: flex-end; gap: .65rem; margin-top: 1rem; }
 .chunk-dialog { width: min(64rem, calc(100vw - 2rem)); max-height: calc(100vh - 2rem); }
-.original-dialog { width: min(64rem, calc(100vw - 2rem)); max-height: calc(100vh - 2rem); }
-.original-text { max-height: calc(100vh - 10rem); margin-top: 1rem !important; overflow: auto; }
+.original-dialog {
+  width: min(64rem, calc(100vw - 2rem));
+  height: calc(100vh - 2rem);
+  max-height: calc(100vh - 2rem);
+  overflow: hidden;
+}
+.original-dialog .dialog-body {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+}
+.original-text {
+  min-height: 0;
+  margin-top: 1rem !important;
+  overflow: auto;
+  flex: 1;
+}
 .chunk-dialog .dialog-body { padding: 1.2rem; }
 .chunk-dialog-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
 .chunk-dialog-heading h2 { margin-bottom: .25rem; }

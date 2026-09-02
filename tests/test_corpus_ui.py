@@ -595,6 +595,8 @@ def test_dashboard_page_has_no_remote_resources() -> None:
     assert 'id="original-dialog"' in combined
     assert "查看分块" in combined
     assert "查看原文" in combined
+    assert ".original-dialog" in combined
+    assert "overflow: hidden" in combined
     assert "暂无已批准细话题" in combined
     assert "请核对外发范围并确认" in combined
     assert "正在生成细话题" in combined
