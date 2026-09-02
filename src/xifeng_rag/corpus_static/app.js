@@ -2,6 +2,7 @@
 
 const token = new URLSearchParams(window.location.search).get("token") || "";
 const state = { articles: [], stats: null, busy: false };
+let pendingSubtopicReview = null;
 const statusLabels = {
   discovered: "已发现",
   needs_cleanup_review: "待清洗审核",
@@ -155,7 +156,7 @@ function reviewAction(article) {
     button.textContent = article.subtopics?.status === "pending_review"
       ? "继续审核细话题"
       : article.subtopics?.status === "approved" ? "重新生成细话题" : "补充细话题";
-    button.addEventListener("click", () => openSubtopicReview(article, button));
+    button.addEventListener("click", () => prepareSubtopicReview(article, button));
     wrapper.append(button);
     if (article.subtopics) {
       const meta = document.createElement("small");
@@ -170,15 +171,57 @@ function reviewAction(article) {
   return wrapper;
 }
 
-async function openSubtopicReview(article, button) {
+function subtopicDisclosureText(disclosure) {
+  if (disclosure.has_pending_draft) {
+    return [
+      "已有待审细话题草案，不会再次发送正文。",
+      "",
+      `文章：${disclosure.article_title}`,
+      `版本：${disclosure.version_id}`,
+      "",
+      "确认后将直接打开现有草案。",
+    ].join("\n");
+  }
+  return [
+    `文章：${disclosure.article_title}`,
+    `版本：${disclosure.version_id}`,
+    `清洗后正文：${disclosure.character_count} 字符，${disclosure.unit_count} 个原子单元`,
+    "外部服务：OpenAI Codex CLI（复用当前 ChatGPT 登录）",
+    `模型：${disclosure.model}`,
+    `本次最多发送 ${disclosure.max_requests} 次完整清洗后正文。`,
+    "训练使用取决于当前 ChatGPT 账户的数据控制设置。",
+  ].join("\n");
+}
+
+function finishSubtopicDialog(message) {
+  const pending = pendingSubtopicReview;
+  pendingSubtopicReview = null;
+  document.getElementById("subtopic-dialog").close();
+  if (pending) pending.button.disabled = false;
+  if (message) document.getElementById("operation-status").textContent = message;
+}
+
+function renderProgressTab(tab, articleTitle, message, isError = false) {
+  const document = tab.document;
+  document.title = isError ? "细话题生成失败" : "正在生成细话题";
+  const main = document.createElement("main");
+  main.style.cssText = "max-width:42rem;margin:12vh auto;padding:2rem;font:16px/1.7 'Segoe UI','Microsoft YaHei',sans-serif;color:#202522";
+  const heading = document.createElement("h1");
+  heading.textContent = isError ? "细话题生成失败" : "正在生成细话题…";
+  const article = document.createElement("p");
+  article.textContent = articleTitle;
+  article.style.fontWeight = "650";
+  const detail = document.createElement("p");
+  detail.textContent = message;
+  detail.style.color = isError ? "#843f3a" : "#59615c";
+  main.append(heading, article, detail);
+  document.body.replaceChildren(main);
+}
+
+async function prepareSubtopicReview(article, button) {
   const status = document.getElementById("operation-status");
   button.disabled = true;
-  const tab = window.open("about:blank", "_blank");
-  if (!tab) {
-    status.textContent = "浏览器阻止了新标签页，请允许弹窗后重试";
-    button.disabled = false;
-    return;
-  }
+  status.textContent = `正在读取外发范围：${article.title}`;
   try {
     const disclosureResponse = await request("/api/subtopics/disclosure", {
       method: "POST",
@@ -187,25 +230,37 @@ async function openSubtopicReview(article, button) {
     });
     const disclosure = await disclosureResponse.json();
     if (!disclosureResponse.ok) throw new Error(disclosure.error || "无法读取外发范围");
-    const message = disclosure.has_pending_draft
-      ? `已有待审细话题草案，不会再次发送正文。\n\n文章：${disclosure.article_title}\n版本：${disclosure.version_id}\n\n继续审核？`
-      : [
-          `文章：${disclosure.article_title}`,
-          `版本：${disclosure.version_id}`,
-          `清洗后正文：${disclosure.character_count} 字符，${disclosure.unit_count} 个原子单元`,
-          `外部服务：OpenAI Codex CLI（复用当前 ChatGPT 登录）`,
-          `模型：${disclosure.model}`,
-          `本次最多发送 ${disclosure.max_requests} 次完整清洗后正文。`,
-          "训练使用取决于当前 ChatGPT 账户的数据控制设置。",
-          "",
-          "确认发送并生成细话题草案？",
-        ].join("\n");
-    if (!window.confirm(message)) {
-      tab.close();
-      status.textContent = "已取消，未发送正文。";
-      return;
-    }
-    status.textContent = disclosure.has_pending_draft ? "正在启动细话题审核…" : "正在调用 Codex 生成细话题…";
+    pendingSubtopicReview = { article, button, disclosure };
+    document.getElementById("subtopic-disclosure").textContent = subtopicDisclosureText(disclosure);
+    document.getElementById("subtopic-confirm").textContent = disclosure.has_pending_draft
+      ? "继续审核"
+      : "确认并开始生成";
+    document.getElementById("subtopic-dialog").showModal();
+    status.textContent = "请核对外发范围并确认。";
+  } catch (error) {
+    button.disabled = false;
+    status.textContent = error.message;
+  }
+}
+
+async function confirmSubtopicReview() {
+  const pending = pendingSubtopicReview;
+  if (!pending) return;
+  const { article, button, disclosure } = pending;
+  const status = document.getElementById("operation-status");
+  const tab = window.open("about:blank", "_blank");
+  if (!tab) {
+    status.textContent = "浏览器阻止了新标签页，请允许弹窗后重试";
+    return;
+  }
+  pendingSubtopicReview = null;
+  document.getElementById("subtopic-dialog").close();
+  const progress = disclosure.has_pending_draft
+    ? "正在启动已有草案的审核页面。"
+    : "Codex 正在分析这篇文章。长文可能需要几分钟，请不要关闭此标签页。";
+  renderProgressTab(tab, article.title, progress);
+  status.textContent = disclosure.has_pending_draft ? "正在启动细话题审核…" : "正在调用 Codex 生成细话题…";
+  try {
     const response = await request("/api/subtopics/generate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -217,12 +272,21 @@ async function openSubtopicReview(article, button) {
     status.textContent = `${payload.message}：${article.title}`;
     await loadArticles();
   } catch (error) {
-    tab.close();
+    renderProgressTab(tab, article.title, error.message, true);
     status.textContent = error.message;
   } finally {
     button.disabled = false;
   }
 }
+
+document.getElementById("subtopic-cancel").addEventListener("click", () => {
+  finishSubtopicDialog("已取消，未发送正文。");
+});
+document.getElementById("subtopic-confirm").addEventListener("click", confirmSubtopicReview);
+document.getElementById("subtopic-dialog").addEventListener("cancel", (event) => {
+  event.preventDefault();
+  finishSubtopicDialog("已取消，未发送正文。");
+});
 
 async function approveOverview(article, textarea, button) {
   const status = document.getElementById("operation-status");

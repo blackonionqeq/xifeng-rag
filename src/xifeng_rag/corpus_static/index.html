@@ -79,6 +79,18 @@
   <template id="stat-template">
     <article class="stat-card"><strong></strong><span></span></article>
   </template>
+
+  <dialog id="subtopic-dialog" aria-labelledby="subtopic-dialog-title">
+    <div class="dialog-body">
+      <p class="eyebrow">单篇完整正文外发确认</p>
+      <h2 id="subtopic-dialog-title">补充细话题</h2>
+      <pre id="subtopic-disclosure"></pre>
+      <div class="dialog-actions">
+        <button id="subtopic-cancel" class="quiet" type="button">取消</button>
+        <button id="subtopic-confirm" type="button">确认并开始生成</button>
+      </div>
+    </div>
+  </dialog>
   <script src="/static/app.js" defer></script>
 </body>
 </html>

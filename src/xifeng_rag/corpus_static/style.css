@@ -86,6 +86,29 @@ td small { margin-top: .25rem; color: #8a8e89; font-family: monospace; }
 .review-action > div { display: flex; gap: .4rem; }
 .review-action select { margin: 0; }
 .empty-state { padding: 2rem; text-align: center; color: #777d78; }
+dialog {
+  width: min(38rem, calc(100vw - 2rem));
+  padding: 0;
+  border: 1px solid #d8d3c7;
+  border-radius: .75rem;
+  color: inherit;
+  background: #faf9f5;
+  box-shadow: 0 1.25rem 4rem rgb(32 37 34 / 28%);
+}
+dialog::backdrop { background: rgb(32 37 34 / 42%); }
+.dialog-body { padding: 1.4rem; }
+.dialog-body h2 { margin: 0 0 .9rem; font-family: Georgia, "Songti SC", serif; }
+.dialog-body pre {
+  margin: 0;
+  padding: 1rem;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  border-radius: .5rem;
+  color: #343a35;
+  background: #eeeae1;
+  font: .88rem/1.65 Inter, "Segoe UI", "Microsoft YaHei", sans-serif;
+}
+.dialog-actions { display: flex; justify-content: flex-end; gap: .65rem; margin-top: 1rem; }
 
 @media (max-width: 900px) {
   header { align-items: flex-start; padding: 1rem; }

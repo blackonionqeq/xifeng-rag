@@ -373,3 +373,7 @@ def test_dashboard_page_has_no_remote_resources() -> None:
     assert "/api/scan" in combined
     assert "/api/reviews" in combined
     assert "X-Corpus-Token" in combined
+    assert 'id="subtopic-dialog"' in combined
+    assert "请核对外发范围并确认" in combined
+    assert "正在生成细话题" in combined
+    assert "window.confirm" not in combined
