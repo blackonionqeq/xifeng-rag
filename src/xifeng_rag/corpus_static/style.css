@@ -109,6 +109,24 @@ dialog::backdrop { background: rgb(32 37 34 / 42%); }
   font: .88rem/1.65 Inter, "Segoe UI", "Microsoft YaHei", sans-serif;
 }
 .dialog-actions { display: flex; justify-content: flex-end; gap: .65rem; margin-top: 1rem; }
+.chunk-dialog { width: min(64rem, calc(100vw - 2rem)); max-height: calc(100vh - 2rem); }
+.chunk-dialog .dialog-body { padding: 1.2rem; }
+.chunk-dialog-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+.chunk-dialog-heading h2 { margin-bottom: .25rem; }
+.chunk-dialog-heading p { margin-bottom: 0; }
+.chunk-list { display: grid; gap: .85rem; margin-top: 1rem; }
+.chunk-card { padding: 1rem; border: 1px solid #ded9cf; border-radius: .65rem; background: #fffefa; }
+.chunk-card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+.chunk-card h3 { margin: 0; font: 650 1.05rem/1.4 Georgia, "Songti SC", serif; }
+.chunk-card h4 { margin: .9rem 0 .4rem; color: #59615c; font-size: .82rem; }
+.chunk-summary { margin: .7rem 0 .35rem; white-space: pre-wrap; }
+.chunk-keywords { margin: 0; color: #6d746f; font-size: .82rem; }
+.readonly-subtopics { display: grid; gap: .45rem; }
+.readonly-subtopics > .muted { margin: 0; }
+.readonly-subtopic { padding: .6rem .7rem; border-left: 3px solid #cdd9d1; background: #f5f6f2; }
+.readonly-subtopic strong, .readonly-subtopic small { display: inline; }
+.readonly-subtopic small { margin-left: .55rem; }
+.readonly-subtopic p { margin: .25rem 0 0; }
 
 @media (max-width: 900px) {
   header { align-items: flex-start; padding: 1rem; }
@@ -116,4 +134,5 @@ dialog::backdrop { background: rgb(32 37 34 / 42%); }
   main { padding: 1rem; }
   .stats { grid-template-columns: repeat(2, 1fr); }
   .filters { grid-template-columns: 1fr; }
+  .chunk-card-heading { flex-direction: column; gap: .45rem; }
 }

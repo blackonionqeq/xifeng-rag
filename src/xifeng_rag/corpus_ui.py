@@ -23,6 +23,7 @@ from xifeng_rag.domain import (
     OverviewStatus,
     ProposalStatus,
     SubtopicSetStatus,
+    TopicProposal,
     VersionStatus,
 )
 from xifeng_rag.review_ui import (
@@ -33,6 +34,7 @@ from xifeng_rag.review_ui import (
     create_review_server,
 )
 from xifeng_rag.storage import (
+    ApprovedManifestRow,
     ArticleOverviewRow,
     ArticleRow,
     ArticleVersionRow,
@@ -146,6 +148,22 @@ class CorpusDashboardApplication:
                 proposals_by_version[proposal.version_id].append(proposal)
 
             indexed_ids = [version.id for version in indexed_versions.values()]
+            manifest_rows = (
+                list(
+                    session.scalars(
+                        select(ApprovedManifestRow)
+                        .where(
+                            ApprovedManifestRow.version_id.in_([version.id for version in versions])
+                        )
+                        .order_by(ApprovedManifestRow.approved_at.desc())
+                    ).all()
+                )
+                if versions
+                else []
+            )
+            manifests_by_version: dict[str, ApprovedManifestRow] = {}
+            for manifest in manifest_rows:
+                manifests_by_version.setdefault(manifest.version_id, manifest)
             chunk_counts = {
                 version_id: count
                 for version_id, count in session.execute(
@@ -217,6 +235,20 @@ class CorpusDashboardApplication:
                 else []
             )
             indexed_chunk_count = chunk_counts.get(indexed.id, 0) if indexed is not None else 0
+            view_version = indexed
+            if view_version is None:
+                approved_versions = [
+                    version
+                    for version in versions_by_article.get(article.id, [])
+                    if version.active and version.id in manifests_by_version
+                ]
+                if approved_versions:
+                    view_version = max(
+                        approved_versions, key=lambda item: (item.created_at, item.id)
+                    )
+            view_manifest = (
+                manifests_by_version.get(view_version.id) if view_version is not None else None
+            )
             overview = (overviews_by_version.get(latest.id) if latest is not None else None) or (
                 overviews_by_version.get(indexed.id) if indexed is not None else None
             )
@@ -252,6 +284,19 @@ class CorpusDashboardApplication:
                         indexed is not None and latest is not None and indexed.id != latest.id
                     ),
                     "is_indexed": indexed is not None and indexed_chunk_count > 0,
+                    "chunk_view": (
+                        {
+                            "version_id": view_version.id,
+                            "manifest_id": view_manifest.id,
+                            "topic_count": len(
+                                TopicProposal.model_validate_json(
+                                    view_manifest.topics_json or '{"topics": []}'
+                                ).topics
+                            ),
+                        }
+                        if view_version is not None and view_manifest is not None
+                        else None
+                    ),
                     "subtopics": (
                         {
                             "set_id": subtopic_set.id,
@@ -318,6 +363,101 @@ class CorpusDashboardApplication:
                 "approved_overviews": overview_statuses.count(OverviewStatus.APPROVED.value),
                 "pending_overviews": overview_statuses.count(OverviewStatus.PENDING_REVIEW.value),
             },
+        }
+
+    def chunk_details(self, article_id: str) -> dict[str, object]:
+        if not article_id:
+            raise ValueError("必须提供文章 ID")
+        with self.database.session() as session:
+            article = session.get(ArticleRow, article_id)
+            if article is None:
+                raise ValueError("文章不存在")
+            versions = list(
+                session.scalars(
+                    select(ArticleVersionRow)
+                    .where(
+                        ArticleVersionRow.article_id == article_id,
+                        ArticleVersionRow.active.is_(True),
+                    )
+                    .order_by(ArticleVersionRow.created_at.desc(), ArticleVersionRow.id.desc())
+                ).all()
+            )
+            version_by_id = {version.id: version for version in versions}
+            manifests = (
+                list(
+                    session.scalars(
+                        select(ApprovedManifestRow)
+                        .where(ApprovedManifestRow.version_id.in_(list(version_by_id)))
+                        .order_by(
+                            ApprovedManifestRow.approved_at.desc(),
+                            ApprovedManifestRow.id.desc(),
+                        )
+                    ).all()
+                )
+                if version_by_id
+                else []
+            )
+            manifest_by_version: dict[str, ApprovedManifestRow] = {}
+            for manifest in manifests:
+                manifest_by_version.setdefault(manifest.version_id, manifest)
+
+            indexed = [
+                version
+                for version in versions
+                if version.status == VersionStatus.INDEXED.value
+                and version.id in manifest_by_version
+            ]
+            if indexed:
+                version = max(indexed, key=lambda item: (item.created_at, item.id))
+            else:
+                approved = [version for version in versions if version.id in manifest_by_version]
+                if not approved:
+                    raise ValueError("文章尚无已批准分块")
+                version = max(approved, key=lambda item: (item.created_at, item.id))
+            manifest = manifest_by_version[version.id]
+            proposal = TopicProposal.model_validate_json(manifest.topics_json or '{"topics": []}')
+            approved_subtopics = session.scalar(
+                select(SubtopicSetRow)
+                .where(
+                    SubtopicSetRow.manifest_id == manifest.id,
+                    SubtopicSetRow.status == SubtopicSetStatus.APPROVED.value,
+                )
+                .order_by(SubtopicSetRow.approved_at.desc(), SubtopicSetRow.created_at.desc())
+                .limit(1)
+            )
+            subtopics_by_parent: dict[tuple[int, int], list[dict[str, object]]] = {}
+            if approved_subtopics is not None:
+                parsed = ArticleSubtopics.model_validate_json(approved_subtopics.subtopics_json)
+                subtopics_by_parent = {
+                    (parent.parent_start_unit, parent.parent_end_unit): [
+                        item.model_dump() for item in parent.subtopics
+                    ]
+                    for parent in parsed.topics
+                }
+
+        topics = [
+            {
+                "title": topic.title,
+                "start_unit": topic.start_paragraph,
+                "end_unit": topic.end_paragraph,
+                "summary": topic.summary,
+                "keywords": topic.keywords,
+                "include_in_index": topic.include_in_index,
+                "subtopics": subtopics_by_parent.get(
+                    (topic.start_paragraph, topic.end_paragraph), []
+                ),
+            }
+            for topic in proposal.topics
+        ]
+        return {
+            "article_id": article_id,
+            "article_title": article.title,
+            "version_id": version.id,
+            "manifest_id": manifest.id,
+            "approved_at": _isoformat(manifest.approved_at),
+            "topic_count": len(topics),
+            "subtopic_count": sum(len(topic["subtopics"]) for topic in topics),
+            "topics": topics,
         }
 
     def approve_overview(self, body: object) -> dict[str, object]:
@@ -566,6 +706,21 @@ def _handler_for(
                     self._json_error(HTTPStatus.FORBIDDEN, "管理令牌无效")
                     return
                 self._json_response(HTTPStatus.OK, application.articles())
+                return
+            if parsed.path == "/api/chunks":
+                if not self._token_valid(parsed.query):
+                    self._json_error(HTTPStatus.FORBIDDEN, "管理令牌无效")
+                    return
+                article_ids = parse_qs(parsed.query).get("article_id", [])
+                if len(article_ids) != 1:
+                    self._json_error(HTTPStatus.BAD_REQUEST, "必须提供唯一的文章 ID")
+                    return
+                try:
+                    result = application.chunk_details(article_ids[0])
+                except (ValueError, ValidationError) as exc:
+                    self._json_error(HTTPStatus.CONFLICT, str(exc))
+                    return
+                self._json_response(HTTPStatus.OK, result)
                 return
             static_files = {
                 "/static/app.js": ("app.js", "text/javascript; charset=utf-8"),

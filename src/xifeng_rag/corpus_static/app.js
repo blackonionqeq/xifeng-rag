@@ -120,6 +120,80 @@ async function openReview(article, proposalId, tab) {
   }
 }
 
+function renderChunkDetails(payload) {
+  document.getElementById("chunk-dialog-title").textContent = payload.article_title;
+  document.getElementById("chunk-dialog-meta").textContent =
+    `版本 ${shortId(payload.version_id)} · ${payload.topic_count} 个分块 · ${payload.subtopic_count} 个已批准细话题`;
+  const list = document.getElementById("chunk-list");
+  list.replaceChildren();
+  payload.topics.forEach((topic, index) => {
+    const card = document.createElement("article");
+    card.className = "chunk-card";
+    const heading = document.createElement("div");
+    heading.className = "chunk-card-heading";
+    const title = document.createElement("h3");
+    title.textContent = `${index + 1}. ${topic.title}`;
+    const badges = document.createElement("div");
+    const range = document.createElement("span");
+    range.className = "badge";
+    range.textContent = `单元 ${topic.start_unit}–${topic.end_unit}`;
+    const indexed = document.createElement("span");
+    indexed.className = `badge ${topic.include_in_index ? "status-indexed" : "missing"}`;
+    indexed.textContent = topic.include_in_index ? "进入索引" : "不进入索引";
+    badges.append(range, indexed);
+    heading.append(title, badges);
+    const summary = document.createElement("p");
+    summary.className = "chunk-summary";
+    summary.textContent = topic.summary;
+    const keywords = document.createElement("p");
+    keywords.className = "chunk-keywords";
+    keywords.textContent = `关键词：${topic.keywords.join("、")}`;
+    const subtopicHeading = document.createElement("h4");
+    subtopicHeading.textContent = "已批准细话题";
+    const subtopics = document.createElement("div");
+    subtopics.className = "readonly-subtopics";
+    if (topic.subtopics.length) {
+      topic.subtopics.forEach((item) => {
+        const row = document.createElement("article");
+        row.className = "readonly-subtopic";
+        const itemTitle = document.createElement("strong");
+        itemTitle.textContent = item.title;
+        const itemRange = document.createElement("small");
+        itemRange.textContent = `单元 ${item.start_unit}–${item.end_unit}`;
+        const itemSummary = document.createElement("p");
+        itemSummary.textContent = item.summary;
+        row.append(itemTitle, itemRange, itemSummary);
+        subtopics.append(row);
+      });
+    } else {
+      const empty = document.createElement("p");
+      empty.className = "muted";
+      empty.textContent = "暂无已批准细话题";
+      subtopics.append(empty);
+    }
+    card.append(heading, summary, keywords, subtopicHeading, subtopics);
+    list.append(card);
+  });
+}
+
+async function openChunkViewer(article, button) {
+  const status = document.getElementById("operation-status");
+  button.disabled = true;
+  status.textContent = `正在读取已批准分块：${article.title}`;
+  try {
+    const response = await request(`/api/chunks?article_id=${encodeURIComponent(article.article_id)}`);
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "分块详情加载失败");
+    renderChunkDetails(payload);
+    document.getElementById("chunk-dialog").showModal();
+    status.textContent = `已加载当前生效分块：${article.title}`;
+  } catch (error) {
+    status.textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
+}
+
 function reviewAction(article) {
   const wrapper = document.createElement("div");
   wrapper.className = "review-action";
@@ -148,6 +222,14 @@ function reviewAction(article) {
     });
     group.append(select, button);
     wrapper.append(group);
+  }
+  if (article.chunk_view) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "small secondary";
+    button.textContent = "查看分块";
+    button.addEventListener("click", () => openChunkViewer(article, button));
+    wrapper.append(button);
   }
   if (article.is_indexed) {
     const button = document.createElement("button");
@@ -286,6 +368,12 @@ document.getElementById("subtopic-confirm").addEventListener("click", confirmSub
 document.getElementById("subtopic-dialog").addEventListener("cancel", (event) => {
   event.preventDefault();
   finishSubtopicDialog("已取消，未发送正文。");
+});
+document.getElementById("chunk-dialog-close").addEventListener("click", () => {
+  document.getElementById("chunk-dialog").close();
+});
+document.getElementById("chunk-dialog").addEventListener("click", (event) => {
+  if (event.target === event.currentTarget) event.currentTarget.close();
 });
 
 async function approveOverview(article, textarea, button) {

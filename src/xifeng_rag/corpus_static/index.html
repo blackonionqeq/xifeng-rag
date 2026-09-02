@@ -91,6 +91,19 @@
       </div>
     </div>
   </dialog>
+  <dialog id="chunk-dialog" class="chunk-dialog" aria-labelledby="chunk-dialog-title">
+    <div class="dialog-body">
+      <div class="chunk-dialog-heading">
+        <div>
+          <p class="eyebrow">当前生效的已批准内容</p>
+          <h2 id="chunk-dialog-title">查看分块</h2>
+          <p id="chunk-dialog-meta" class="muted"></p>
+        </div>
+        <button id="chunk-dialog-close" class="quiet" type="button">关闭</button>
+      </div>
+      <section id="chunk-list" class="chunk-list" aria-live="polite"></section>
+    </div>
+  </dialog>
   <script src="/static/app.js" defer></script>
 </body>
 </html>
