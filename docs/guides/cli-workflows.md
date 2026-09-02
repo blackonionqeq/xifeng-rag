@@ -142,6 +142,7 @@ uv run xifeng eval run <FROZEN_DATASET_ID> --mode hybrid --k 5
 uv run xifeng eval run <FROZEN_DATASET_ID> --mode hybrid --rerank --rerank-candidate-k 20 --k 5
 uv run xifeng eval run <FROZEN_DATASET_ID> --mode hybrid --rerank --rewrite --k 5
 uv run xifeng eval article-discovery
+uv run xifeng eval compare-article-discovery <BASELINE_JSON> <CURRENT_JSON>
 ```
 
 `eval curate` 启动本地评测集工作台，用于录入问题、编辑参考答案和按原子单元标注证据范围。AI 辅助候选需要在显示外发范围后由用户二次确认，且必须人工接受或修改才能成为金标准。
@@ -153,3 +154,8 @@ uv run xifeng eval article-discovery
 Hit@1/3/5、MRR、延迟与不在 Build 中的目标文章数，并把不含正文和文章概括的逐题排名保存到
 `data/evaluation_runs/`。可传入其他 JSON 路径、用 `--build` 固定 Build，或用 `--json` 输出
 完整结构化结果。该命令与证据块的 `eval run` 使用不同金标准，二者不计算跨任务总分。
+
+`eval compare-article-discovery` 比较两次已经保存的文章反查评测。命令会先校验题集内容哈希、
+确认题数、评测深度、BM25/Dense 候选深度和 RRF 参数完全一致，再输出三个检索模式的聚合指标
+变化及逐题正确文章排名变化；不可比时直接拒绝。使用 `--json` 可输出结构化对比结果。该命令
+只读取不含正文的评测结果，不加载索引或模型。

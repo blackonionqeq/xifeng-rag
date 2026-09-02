@@ -4,11 +4,14 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pytest
 from typer.testing import CliRunner
 
 from xifeng_rag.article_evaluation import (
     ArticleDiscoveryDataset,
+    compare_article_discovery_evaluations,
     load_article_discovery_dataset,
+    load_article_discovery_evaluation,
     run_article_discovery_evaluation,
     save_article_discovery_evaluation,
 )
@@ -400,6 +403,161 @@ def test_article_discovery_evaluation_marks_target_missing_from_build(
         assert mode.metrics.incompatible_question_count == 1
         assert mode.metrics.mrr is None
         assert mode.questions[0].status == "expected_article_not_in_build"
+
+
+def test_article_discovery_comparison_reports_metric_and_question_rank_changes(
+    database: Database, tmp_path: Path
+) -> None:
+    stage_id, _ = _article_fixture(database)
+    provider = ThemeEmbeddingProvider()
+    with database.session() as session:
+        outcome = build_article_index(session, tmp_path / "article-indexes", provider)
+    dataset = ArticleDiscoveryDataset.model_validate(
+        {
+            "schema_version": 1,
+            "queries": [
+                {
+                    "id": "question-1",
+                    "query": "哪篇文章讨论社会阶段而不是静态阶层",
+                    "expected_article_id": stage_id,
+                    "expected_title": "别把时代位置误解成静态阶层",
+                    "review_status": "confirmed",
+                }
+            ],
+        }
+    )
+    dataset_path = tmp_path / "dataset.json"
+    with database.session() as session:
+        baseline = run_article_discovery_evaluation(
+            session,
+            dataset,
+            dataset_path,
+            provider,
+            build_id=outcome.build_id,
+        )
+
+    current = baseline.model_copy(deep=True)
+    current.run_id = "current-run"
+    current.build_id = "current-build"
+    current.profile_id = "current-profile"
+    current.modes[0].metrics.hit_at_1 = 0.0
+    current.modes[0].metrics.mrr = 0.5
+    current.modes[0].questions[0].expected_rank = 2
+    current.modes[0].questions[0].reciprocal_rank = 0.5
+    current.modes[0].questions[0].hit_at_1 = False
+
+    comparison = compare_article_discovery_evaluations(
+        baseline,
+        current,
+        baseline_path=tmp_path / "baseline.json",
+        current_path=tmp_path / "current.json",
+    )
+
+    bm25 = comparison.modes[0]
+    assert bm25.metrics["mrr"].delta == -0.5
+    assert bm25.questions[0].baseline_rank == 1
+    assert bm25.questions[0].current_rank == 2
+    assert bm25.questions[0].status == "regressed"
+    assert comparison.baseline_build_id == outcome.build_id
+    assert comparison.current_build_id == "current-build"
+
+
+def test_article_discovery_comparison_rejects_different_dataset_hash(
+    database: Database, tmp_path: Path
+) -> None:
+    stage_id, _ = _article_fixture(database)
+    provider = ThemeEmbeddingProvider()
+    with database.session() as session:
+        outcome = build_article_index(session, tmp_path / "article-indexes", provider)
+        baseline = run_article_discovery_evaluation(
+            session,
+            ArticleDiscoveryDataset.model_validate(
+                {
+                    "schema_version": 1,
+                    "queries": [
+                        {
+                            "id": "question-1",
+                            "query": "阶段",
+                            "expected_article_id": stage_id,
+                            "review_status": "confirmed",
+                        }
+                    ],
+                }
+            ),
+            tmp_path / "dataset.json",
+            provider,
+            build_id=outcome.build_id,
+        )
+    current = baseline.model_copy(update={"dataset_content_hash": "different"}, deep=True)
+
+    with pytest.raises(ValueError, match="题集内容哈希不同"):
+        compare_article_discovery_evaluations(
+            baseline,
+            current,
+            baseline_path=tmp_path / "baseline.json",
+            current_path=tmp_path / "current.json",
+        )
+
+
+def test_article_discovery_comparison_cli_supports_text_and_json(
+    database: Database, tmp_path: Path
+) -> None:
+    stage_id, _ = _article_fixture(database)
+    provider = ThemeEmbeddingProvider()
+    with database.session() as session:
+        outcome = build_article_index(session, tmp_path / "article-indexes", provider)
+        baseline = run_article_discovery_evaluation(
+            session,
+            ArticleDiscoveryDataset.model_validate(
+                {
+                    "schema_version": 1,
+                    "queries": [
+                        {
+                            "id": "question-1",
+                            "query": "阶段",
+                            "expected_article_id": stage_id,
+                            "review_status": "confirmed",
+                        }
+                    ],
+                }
+            ),
+            tmp_path / "dataset.json",
+            provider,
+            build_id=outcome.build_id,
+        )
+    current = baseline.model_copy(update={"run_id": "current-run"}, deep=True)
+    baseline_path = tmp_path / "baseline.json"
+    current_path = tmp_path / "current.json"
+    baseline_path.write_text(baseline.model_dump_json(indent=2), encoding="utf-8")
+    current_path.write_text(current.model_dump_json(indent=2), encoding="utf-8")
+
+    loaded = load_article_discovery_evaluation(baseline_path)
+    assert loaded.run_id == baseline.run_id
+    text_result = CliRunner().invoke(
+        app,
+        [
+            "eval",
+            "compare-article-discovery",
+            str(baseline_path),
+            str(current_path),
+        ],
+    )
+    assert text_result.exit_code == 0, text_result.output
+    assert "逐题排名" in text_result.output
+    assert "question-1: 1 -> 1 [不变]" in text_result.output
+
+    json_result = CliRunner().invoke(
+        app,
+        [
+            "eval",
+            "compare-article-discovery",
+            str(baseline_path),
+            str(current_path),
+            "--json",
+        ],
+    )
+    assert json_result.exit_code == 0, json_result.output
+    assert json.loads(json_result.output)["task"] == "article_discovery_comparison"
 
 
 def test_article_discovery_cli_uses_default_dataset_and_persists_result(

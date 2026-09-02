@@ -221,6 +221,9 @@ def test_generation_prompt_does_not_require_full_coverage(database: Database) ->
     )
     prompt = generation_prompt("标题", topics, paragraphs)
     assert "不要求覆盖父话题" in prompt
+    assert "每个父话题\n最多返回 4 个细话题" in prompt
+    assert "整篇文章不设细话题总数上限" in prompt
+    assert "相邻、范围重叠或表达同一机制的候选\n必须合并" in prompt
     assert "不得修改" in prompt
 
 

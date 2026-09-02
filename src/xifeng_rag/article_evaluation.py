@@ -136,11 +136,178 @@ class ArticleDiscoveryEvaluationResult(BaseModel):
     modes: list[ArticleDiscoveryModeResult]
 
 
+class ArticleDiscoveryMetricComparison(BaseModel):
+    baseline: float | None
+    current: float | None
+    delta: float | None
+
+
+class ArticleDiscoveryQuestionComparison(BaseModel):
+    question_id: str
+    expected_title: str | None
+    baseline_rank: int | None
+    current_rank: int | None
+    status: Literal["improved", "regressed", "unchanged", "incompatible"]
+
+
+class ArticleDiscoveryModeComparison(BaseModel):
+    mode: RetrievalMode
+    metrics: dict[str, ArticleDiscoveryMetricComparison]
+    questions: list[ArticleDiscoveryQuestionComparison]
+
+
+class ArticleDiscoveryEvaluationComparison(BaseModel):
+    schema_version: Literal[1] = 1
+    task: Literal["article_discovery_comparison"] = "article_discovery_comparison"
+    baseline_path: str
+    current_path: str
+    dataset_content_hash: str
+    baseline_run_id: str
+    current_run_id: str
+    baseline_build_id: str
+    current_build_id: str
+    baseline_profile_id: str
+    current_profile_id: str
+    baseline_code_commit: str | None
+    current_code_commit: str | None
+    baseline_worktree_dirty: bool | None
+    current_worktree_dirty: bool | None
+    modes: list[ArticleDiscoveryModeComparison]
+
+
 def load_article_discovery_dataset(path: Path) -> ArticleDiscoveryDataset:
     resolved = path.resolve()
     if not resolved.is_file():
         raise FileNotFoundError(f"文章反查评测集不存在：{resolved}")
     return ArticleDiscoveryDataset.model_validate_json(resolved.read_text(encoding="utf-8"))
+
+
+def load_article_discovery_evaluation(path: Path) -> ArticleDiscoveryEvaluationResult:
+    resolved = path.resolve()
+    if not resolved.is_file():
+        raise FileNotFoundError(f"文章反查评测结果不存在：{resolved}")
+    return ArticleDiscoveryEvaluationResult.model_validate_json(
+        resolved.read_text(encoding="utf-8")
+    )
+
+
+def _comparison_compatibility_issues(
+    baseline: ArticleDiscoveryEvaluationResult,
+    current: ArticleDiscoveryEvaluationResult,
+) -> list[str]:
+    fields = {
+        "题集内容哈希": "dataset_content_hash",
+        "确认题数": "confirmed_question_count",
+        "evaluation_k": "evaluation_k",
+        "BM25 候选深度": "bm25_candidate_k",
+        "Dense 候选深度": "dense_candidate_k",
+        "RRF k": "rrf_k",
+    }
+    issues = []
+    for label, field in fields.items():
+        baseline_value = getattr(baseline, field)
+        current_value = getattr(current, field)
+        if baseline_value != current_value:
+            issues.append(f"{label}不同：{baseline_value} != {current_value}")
+    if {item.mode for item in baseline.modes} != {item.mode for item in current.modes}:
+        issues.append("评测模式不同")
+    return issues
+
+
+def _question_comparison_status(
+    baseline: ArticleDiscoveryQuestionResult,
+    current: ArticleDiscoveryQuestionResult,
+) -> Literal["improved", "regressed", "unchanged", "incompatible"]:
+    if baseline.status != "evaluated" or current.status != "evaluated":
+        return "incompatible"
+    if baseline.expected_rank == current.expected_rank:
+        return "unchanged"
+    if current.expected_rank is None:
+        return "regressed"
+    if baseline.expected_rank is None or current.expected_rank < baseline.expected_rank:
+        return "improved"
+    return "regressed"
+
+
+def compare_article_discovery_evaluations(
+    baseline: ArticleDiscoveryEvaluationResult,
+    current: ArticleDiscoveryEvaluationResult,
+    *,
+    baseline_path: Path,
+    current_path: Path,
+) -> ArticleDiscoveryEvaluationComparison:
+    issues = _comparison_compatibility_issues(baseline, current)
+    if issues:
+        raise ValueError("文章反查评测结果不可直接比较：" + "；".join(issues))
+
+    metric_fields = (
+        "hit_at_1",
+        "hit_at_3",
+        "hit_at_5",
+        "mrr",
+        "latency_mean_ms",
+        "latency_p95_ms",
+    )
+    current_modes = {item.mode: item for item in current.modes}
+    mode_comparisons: list[ArticleDiscoveryModeComparison] = []
+    for baseline_mode in baseline.modes:
+        current_mode = current_modes[baseline_mode.mode]
+        metrics: dict[str, ArticleDiscoveryMetricComparison] = {}
+        for field in metric_fields:
+            baseline_value = getattr(baseline_mode.metrics, field)
+            current_value = getattr(current_mode.metrics, field)
+            metrics[field] = ArticleDiscoveryMetricComparison(
+                baseline=baseline_value,
+                current=current_value,
+                delta=(
+                    current_value - baseline_value
+                    if baseline_value is not None and current_value is not None
+                    else None
+                ),
+            )
+
+        baseline_questions = {item.question_id: item for item in baseline_mode.questions}
+        current_questions = {item.question_id: item for item in current_mode.questions}
+        if baseline_questions.keys() != current_questions.keys():
+            raise ValueError(
+                f"文章反查评测结果不可直接比较：{baseline_mode.mode.value} 的题目 ID 不同"
+            )
+        questions = [
+            ArticleDiscoveryQuestionComparison(
+                question_id=item.question_id,
+                expected_title=item.expected_title,
+                baseline_rank=item.expected_rank,
+                current_rank=current_questions[item.question_id].expected_rank,
+                status=_question_comparison_status(
+                    item, current_questions[item.question_id]
+                ),
+            )
+            for item in baseline_mode.questions
+        ]
+        mode_comparisons.append(
+            ArticleDiscoveryModeComparison(
+                mode=baseline_mode.mode,
+                metrics=metrics,
+                questions=questions,
+            )
+        )
+
+    return ArticleDiscoveryEvaluationComparison(
+        baseline_path=str(baseline_path.resolve()),
+        current_path=str(current_path.resolve()),
+        dataset_content_hash=baseline.dataset_content_hash,
+        baseline_run_id=baseline.run_id,
+        current_run_id=current.run_id,
+        baseline_build_id=baseline.build_id,
+        current_build_id=current.build_id,
+        baseline_profile_id=baseline.profile_id,
+        current_profile_id=current.profile_id,
+        baseline_code_commit=baseline.code_commit,
+        current_code_commit=current.code_commit,
+        baseline_worktree_dirty=baseline.worktree_dirty,
+        current_worktree_dirty=current.worktree_dirty,
+        modes=mode_comparisons,
+    )
 
 
 def _git_state() -> tuple[str | None, bool | None]:

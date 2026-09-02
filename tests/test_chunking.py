@@ -197,6 +197,9 @@ def test_semantic_prompt_allows_one_topic_without_size_warnings(
         assert "显式篇章结构的优先级高于局部语义变化" in prompt
         assert "案例、类比、数据、原因、推导、细节和过渡" in prompt
         assert "当前只做单层顶层分块" in prompt
+        assert "每个顶层话题最多返回 4 个细话题" in prompt
+        assert "整篇文章不设细话题总数上限" in prompt
+        assert "相邻、范围重叠或表达同一机制的候选必须合并" in prompt
         assert "文末文章目录" in prompt
         assert "是否进入索引由用户审核决定" in prompt
         assert "不要输出内容角色" in prompt

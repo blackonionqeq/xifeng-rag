@@ -15,7 +15,9 @@ from sqlalchemy.orm import Session
 
 from xifeng_rag import __version__
 from xifeng_rag.article_evaluation import (
+    compare_article_discovery_evaluations,
     load_article_discovery_dataset,
+    load_article_discovery_evaluation,
     run_article_discovery_evaluation,
     save_article_discovery_evaluation,
 )
@@ -1748,6 +1750,85 @@ def eval_article_discovery(
     finally:
         if provider is not None:
             provider.close()
+
+
+@eval_app.command("compare-article-discovery")
+def compare_article_discovery(
+    baseline_path: Annotated[Path, typer.Argument(help="基线文章反查评测结果 JSON")],
+    current_path: Annotated[Path, typer.Argument(help="新版文章反查评测结果 JSON")],
+    as_json: Annotated[bool, typer.Option("--json", help="输出完整结构化对比结果")] = False,
+) -> None:
+    """比较两次参数一致的文章反查评测结果。"""
+    try:
+        baseline = load_article_discovery_evaluation(baseline_path)
+        current = load_article_discovery_evaluation(current_path)
+        comparison = compare_article_discovery_evaluations(
+            baseline,
+            current,
+            baseline_path=baseline_path,
+            current_path=current_path,
+        )
+        if as_json:
+            typer.echo(comparison.model_dump_json(indent=2))
+            return
+
+        typer.echo(
+            f"文章反查评测对比：{comparison.baseline_run_id} -> {comparison.current_run_id}"
+        )
+        typer.echo(
+            f"Build：{comparison.baseline_build_id} -> {comparison.current_build_id}"
+        )
+        typer.echo(
+            f"Profile：{comparison.baseline_profile_id} -> {comparison.current_profile_id}"
+        )
+        typer.echo(
+            "Git："
+            f"{comparison.baseline_code_commit or '未知'}"
+            f" (dirty={comparison.baseline_worktree_dirty}) -> "
+            f"{comparison.current_code_commit or '未知'}"
+            f" (dirty={comparison.current_worktree_dirty})"
+        )
+        metric_labels = {
+            "hit_at_1": "Hit@1",
+            "hit_at_3": "Hit@3",
+            "hit_at_5": "Hit@5",
+            "mrr": "MRR",
+            "latency_mean_ms": "平均延迟(ms)",
+            "latency_p95_ms": "P95延迟(ms)",
+        }
+        status_labels = {
+            "improved": "改善",
+            "regressed": "退化",
+            "unchanged": "不变",
+            "incompatible": "不兼容",
+        }
+        for mode in comparison.modes:
+            typer.echo(f"\n[{mode.mode.value}]")
+            for field, values in mode.metrics.items():
+                if values.baseline is None or values.current is None or values.delta is None:
+                    rendered = "不可用"
+                else:
+                    rendered = (
+                        f"{values.baseline:.3f} -> {values.current:.3f} "
+                        f"({values.delta:+.3f})"
+                    )
+                typer.echo(f"  {metric_labels[field]}: {rendered}")
+            typer.echo("  逐题排名：")
+            for question in mode.questions:
+                baseline_rank = (
+                    str(question.baseline_rank)
+                    if question.baseline_rank is not None
+                    else "未召回"
+                )
+                current_rank = (
+                    str(question.current_rank) if question.current_rank is not None else "未召回"
+                )
+                typer.echo(
+                    f"    {question.question_id}: {baseline_rank} -> {current_rank} "
+                    f"[{status_labels[question.status]}]"
+                )
+    except Exception as exc:
+        _abort(exc)
 
 
 @eval_app.command("curate")
