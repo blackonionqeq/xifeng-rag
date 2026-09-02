@@ -92,6 +92,19 @@ from xifeng_rag.indexing import (
     search_layered_with_query_variants,
     search_with_query_variants,
 )
+from xifeng_rag.layered_article_evaluation import (
+    FallbackPolicy,
+    compare_layered_article_evaluations,
+    load_layered_article_evaluation,
+    run_layered_article_evaluation,
+    save_layered_article_evaluation,
+    simulate_layered_fallback,
+)
+from xifeng_rag.layered_article_search import (
+    LATEST_SUITE_FILE,
+    build_layered_article_indexes,
+    load_layered_suite,
+)
 from xifeng_rag.query_rewrite import (
     NoopQueryRewriter,
     OllamaQueryRewriter,
@@ -1169,6 +1182,46 @@ def articles_search(
             provider.close()
 
 
+@articles_app.command("build-layered-index")
+def articles_build_layered_index(
+    ctx: typer.Context,
+    candidate_k: Annotated[
+        int, typer.Option("--candidate-k", min=5, max=1000, help="每层单元候选深度")
+    ] = 20,
+) -> None:
+    """构建四个互相隔离、默认不激活的文章发现实验索引。"""
+    runtime = _runtime(ctx)
+    provider = None
+    try:
+        provider = _embedding_provider(runtime.settings)
+        layered = runtime.settings.layered
+        with runtime.database.session() as session:
+            suite = build_layered_article_indexes(
+                session,
+                runtime.settings.article_index_dir,
+                provider,
+                candidate_k=candidate_k,
+                splitter_version=layered.splitter_version,
+                target_chars=layered.target_chars,
+                max_chars=layered.max_chars,
+                tail_merge_chars=layered.tail_merge_chars,
+            )
+        typer.echo(
+            f"分层文章索引套件：{suite.suite_id}，快照 {suite.corpus_snapshot}"
+        )
+        for layer, outcome in suite.builds.items():
+            typer.echo(
+                f"{layer.value}: Build={outcome.build_id}  单元={outcome.unit_count}  "
+                f"文章={outcome.article_count}  {outcome.duration_ms}ms"
+            )
+        typer.echo(f"套件清单：{suite.manifest_path}")
+    except Exception as exc:
+        _abort(exc)
+    finally:
+        if provider is not None:
+            provider.close()
+
+
 @chunks_app.command("export-review")
 def chunks_export_review(
     ctx: typer.Context,
@@ -1826,6 +1879,162 @@ def compare_article_discovery(
                 typer.echo(
                     f"    {question.question_id}: {baseline_rank} -> {current_rank} "
                     f"[{status_labels[question.status]}]"
+                )
+    except Exception as exc:
+        _abort(exc)
+
+
+@eval_app.command("layered-article-discovery")
+def eval_layered_article_discovery(
+    ctx: typer.Context,
+    dataset_path: Annotated[
+        Path | None,
+        typer.Argument(help="文章反查评测 JSON；默认使用 data/article_discovery_queries.json"),
+    ] = None,
+    suite_path: Annotated[
+        Path | None,
+        typer.Option("--suite", help="分层索引套件清单；默认使用最新套件"),
+    ] = None,
+    candidate_k: Annotated[
+        int, typer.Option("--candidate-k", min=5, max=1000, help="每层单元候选深度")
+    ] = 20,
+    as_json: Annotated[bool, typer.Option("--json", help="输出完整结构化运行结果")] = False,
+) -> None:
+    """在四个隔离层上运行 BM25、Dense 与多单元聚合实验。"""
+    runtime = _runtime(ctx)
+    provider = None
+    try:
+        resolved_dataset = (
+            dataset_path.resolve()
+            if dataset_path is not None
+            else runtime.settings.data_dir / "article_discovery_queries.json"
+        )
+        resolved_suite = (
+            suite_path.resolve()
+            if suite_path is not None
+            else runtime.settings.article_index_dir / LATEST_SUITE_FILE
+        )
+        dataset = load_article_discovery_dataset(resolved_dataset)
+        build_ids = load_layered_suite(resolved_suite)
+        provider = _embedding_provider(runtime.settings)
+        with runtime.database.session() as session:
+            outcome = run_layered_article_evaluation(
+                session,
+                dataset,
+                resolved_dataset,
+                provider,
+                build_ids,
+                candidate_k=candidate_k,
+                aggregation_rrf_k=runtime.settings.retrieval.rrf_k,
+            )
+        output_path = save_layered_article_evaluation(
+            outcome, runtime.settings.data_dir / "evaluation_runs"
+        )
+        if as_json:
+            typer.echo(outcome.model_dump_json(indent=2))
+            return
+        typer.echo(
+            f"分层文章反查评测完成：{outcome.run_id}，"
+            f"确认题 {outcome.confirmed_question_count}"
+        )
+        for channel in outcome.channels:
+            metrics = channel.metrics
+            summary = (
+                f"Hit@1={metrics.hit_at_1:.3f} Hit@3={metrics.hit_at_3:.3f} "
+                f"Hit@5={metrics.hit_at_5:.3f} MRR={metrics.mrr:.3f}"
+                if metrics.mrr is not None
+                else "该层没有兼容题"
+            )
+            typer.echo(
+                f"{channel.layer.value}/{channel.mode.value}/{channel.aggregation.value}: "
+                f"{summary}  不可用={metrics.unavailable_question_count}"
+            )
+        typer.echo(f"结果：{output_path}")
+    except Exception as exc:
+        _abort(exc)
+    finally:
+        if provider is not None:
+            provider.close()
+
+
+@eval_app.command("simulate-article-fallback")
+def eval_simulate_article_fallback(
+    result_path: Annotated[Path, typer.Argument(help="分层文章反查评测结果 JSON")],
+    policy: Annotated[FallbackPolicy, typer.Option("--policy")] = (
+        FallbackPolicy.MARGIN_CASCADE
+    ),
+    margin_ratio: Annotated[
+        float, typer.Option("--margin-ratio", min=0.0, max=1.0)
+    ] = 0.1,
+    overlap: Annotated[float, typer.Option("--overlap", min=0.0, max=1.0)] = 0.5,
+    rrf_k: Annotated[int, typer.Option("--rrf-k", min=1)] = 60,
+    as_json: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """只读取已保存结果，离线重放分层降级策略。"""
+    try:
+        source = load_layered_article_evaluation(result_path)
+        outcome = simulate_layered_fallback(
+            source,
+            policy=policy,
+            margin_ratio_threshold=margin_ratio,
+            overlap_threshold=overlap,
+            fusion_rrf_k=rrf_k,
+        )
+        if as_json:
+            typer.echo(outcome.model_dump_json(indent=2))
+            return
+        typer.echo(
+            f"策略={outcome.policy.value}  Hit@1={outcome.hit_at_1:.3f}  "
+            f"Hit@3={outcome.hit_at_3:.3f}  Hit@5={outcome.hit_at_5:.3f}  "
+            f"MRR={outcome.mrr:.3f}"
+        )
+        typer.echo(
+            "触发比例："
+            + "  ".join(f"{key}={value:.1%}" for key, value in outcome.layer_trigger_rate.items())
+        )
+        typer.echo(
+            f"延迟估算：平均 {outcome.latency_mean_ms:.1f}ms，"
+            f"最坏 {outcome.latency_max_ms:.1f}ms"
+        )
+        typer.echo(f"改善：{', '.join(outcome.improved_question_ids) or '无'}")
+        typer.echo(f"退化：{', '.join(outcome.regressed_question_ids) or '无'}")
+    except Exception as exc:
+        _abort(exc)
+
+
+@eval_app.command("compare-layered-article-discovery")
+def compare_layered_article_discovery(
+    baseline_path: Annotated[Path, typer.Argument(help="基线分层文章评测 JSON")],
+    current_path: Annotated[Path, typer.Argument(help="新版分层文章评测 JSON")],
+    as_json: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """校验实验条件并比较所有隔离层通道。"""
+    try:
+        baseline = load_layered_article_evaluation(baseline_path)
+        current = load_layered_article_evaluation(current_path)
+        comparison = compare_layered_article_evaluations(baseline, current)
+        if as_json:
+            typer.echo(comparison.model_dump_json(indent=2))
+            return
+        typer.echo(
+            f"分层文章反查对比：{comparison.baseline_run_id} -> "
+            f"{comparison.current_run_id}"
+        )
+        for channel in comparison.channels:
+            label = (
+                f"{channel.layer.value}/{channel.mode.value}/{channel.aggregation.value}"
+            )
+            mrr = channel.metrics["mrr"]
+            hit = channel.metrics["hit_at_1"]
+            typer.echo(
+                f"{label}: Hit@1 Δ={hit.delta if hit.delta is not None else '不可用'}  "
+                f"MRR Δ={mrr.delta if mrr.delta is not None else '不可用'}"
+            )
+            changed = [item for item in channel.questions if item.status != "unchanged"]
+            for item in changed:
+                typer.echo(
+                    f"  {item.question_id}: {item.baseline_rank} -> "
+                    f"{item.current_rank} [{item.status}]"
                 )
     except Exception as exc:
         _abort(exc)

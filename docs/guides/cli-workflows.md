@@ -143,6 +143,10 @@ uv run xifeng eval run <FROZEN_DATASET_ID> --mode hybrid --rerank --rerank-candi
 uv run xifeng eval run <FROZEN_DATASET_ID> --mode hybrid --rerank --rewrite --k 5
 uv run xifeng eval article-discovery
 uv run xifeng eval compare-article-discovery <BASELINE_JSON> <CURRENT_JSON>
+uv run xifeng articles build-layered-index --candidate-k 20
+uv run xifeng eval layered-article-discovery --candidate-k 20
+uv run xifeng eval compare-layered-article-discovery <BASELINE_JSON> <CURRENT_JSON>
+uv run xifeng eval simulate-article-fallback <LAYERED_RESULT_JSON>
 ```
 
 `eval curate` 启动本地评测集工作台，用于录入问题、编辑参考答案和按原子单元标注证据范围。AI 辅助候选需要在显示外发范围后由用户二次确认，且必须人工接受或修改才能成为金标准。
@@ -159,3 +163,18 @@ Hit@1/3/5、MRR、延迟与不在 Build 中的目标文章数，并把不含正�
 确认题数、评测深度、BM25/Dense 候选深度和 RRF 参数完全一致，再输出三个检索模式的聚合指标
 变化及逐题正确文章排名变化；不可比时直接拒绝。使用 `--json` 可输出结构化对比结果。该命令
 只读取不含正文的评测结果，不加载索引或模型。
+
+`articles build-layered-index` 为概括、关键词、已批准细话题和批准范围内的原文分别创建独立、
+默认不激活的 BM25 + Dense Build，并原子发布一份套件清单；候选深度属于 Profile，评测时必须
+保持一致。`eval layered-article-discovery` 默认读取最新套件，在概括/关键词层运行 `best_unit`，
+在细话题/原文层同时运行 `best_unit` 与最多三个单元的 `top_n_rank_fusion`，报告各层
+Hit@1/3/5、MRR、延迟、目标不可用数、双路一致性和按单元数分组的结果。持久化记录只包含
+稳定 ID、标题、父话题和范围，不包含正文、完整概括或细话题集合。
+
+`eval simulate-article-fallback` 只读取上述安全结果，不加载索引或模型。它可用 `--policy`、
+`--margin-ratio`、`--overlap` 和 `--rrf-k` 重放候选降级策略，同时报告各层触发比例、准确性、
+平均/最坏延迟估算以及逐题改善和退化。阈值只能在扩充后的 dev 上选择，当前小题集结果不能
+直接成为线上控制器配置。
+
+`eval compare-layered-article-discovery` 只比较题集哈希、语料快照、四层 Profile、候选/结果深度、
+聚合方法与 RRF 参数一致的运行；任一实验条件不一致都会拒绝输出单变量 A/B 结论。

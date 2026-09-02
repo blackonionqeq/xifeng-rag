@@ -196,6 +196,7 @@ def selected_article_documents(session: Session) -> list[ArticleSearchDocument]:
             select(SubtopicSetRow)
             .where(
                 SubtopicSetRow.version_id == version.id,
+                SubtopicSetRow.manifest_id == manifest.id,
                 SubtopicSetRow.status == "approved",
             )
             .order_by(SubtopicSetRow.approved_at.desc())
