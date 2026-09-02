@@ -22,6 +22,8 @@ from xifeng_rag.indexing import EmbeddingProvider
 from xifeng_rag.layered_article_search import (
     ArticleAggregation,
     ArticleDiscoveryLayer,
+    article_rank_fusion,
+    is_layer_clear,
     search_article_layer,
 )
 
@@ -668,23 +670,24 @@ def _is_clear(
         denominator = abs(item.candidates[0].score)
         if denominator:
             margins.append(item.top1_top2_score_margin / denominator)
-    return (
-        bool(margins)
-        and min(margins) >= margin_threshold
-        and (bm25.bm25_dense_top_k_overlap or 0.0) >= overlap_threshold
+    return is_layer_clear(
+        top1_agree=True,
+        relative_margins=margins,
+        top_k_overlap=bm25.bm25_dense_top_k_overlap or 0.0,
+        margin_threshold=margin_threshold,
+        overlap_threshold=overlap_threshold,
     )
 
 
 def _fuse_channels(
     channel_questions: list[LayeredQuestionResult], rrf_k: int
 ) -> list[str]:
-    scores: dict[str, float] = defaultdict(float)
-    for question in channel_questions:
-        if question.status != "evaluated":
-            continue
-        for candidate in question.candidates:
-            scores[candidate.article_id] += 1.0 / (rrf_k + candidate.rank)
-    return [item[0] for item in sorted(scores.items(), key=lambda item: (-item[1], item[0]))]
+    rankings = [
+        [candidate.article_id for candidate in question.candidates]
+        for question in channel_questions
+        if question.status == "evaluated"
+    ]
+    return [article_id for article_id, _ in article_rank_fusion(rankings, rrf_k)]
 
 
 def simulate_layered_fallback(

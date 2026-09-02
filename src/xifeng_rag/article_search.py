@@ -78,6 +78,8 @@ class ArticleSearchResult:
     bm25_rank: int | None
     dense_score: float | None
     dense_rank: int | None
+    strategy: str = "cumulative_hybrid"
+    activated_layers: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

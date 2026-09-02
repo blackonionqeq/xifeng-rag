@@ -17,7 +17,12 @@ from qdrant_client import QdrantClient, models
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from xifeng_rag.article_search import selected_article_documents
+from xifeng_rag.article_search import (
+    ArticleSearchResult,
+    _matched_subtopics,
+    _matched_topics,
+    selected_article_documents,
+)
 from xifeng_rag.corpus import stable_id
 from xifeng_rag.domain import BuildStatus, RetrievalMode
 from xifeng_rag.indexing import ChineseTokenizer, EmbeddingProvider, RankedHit
@@ -45,6 +50,18 @@ class ArticleDiscoveryLayer(StrEnum):
 class ArticleAggregation(StrEnum):
     BEST_UNIT = "best_unit"
     TOP_N_RANK_FUSION = "top_n_rank_fusion"
+
+
+class ArticleSearchStrategy(StrEnum):
+    DISAGREEMENT_CASCADE = "disagreement_cascade"
+    CUMULATIVE_HYBRID = "cumulative_hybrid"
+
+
+@dataclass(frozen=True)
+class LayeredCascadeSearchOutcome:
+    results: list[ArticleSearchResult]
+    activated_layers: tuple[ArticleDiscoveryLayer, ...]
+    corpus_snapshot: str
 
 
 @dataclass(frozen=True)
@@ -792,3 +809,245 @@ def search_article_layer(
         "embedding": metadata.get("embedding"),
         "splitter": metadata.get("splitter"),
     }
+
+
+def article_rank_fusion(
+    rankings: list[list[str]], rrf_k: int
+) -> list[tuple[str, float]]:
+    if rrf_k <= 0:
+        raise ValueError("RRF k 必须大于 0")
+    scores: dict[str, float] = {}
+    for ranking in rankings:
+        for rank, article_id in enumerate(ranking, start=1):
+            scores[article_id] = scores.get(article_id, 0.0) + 1.0 / (rrf_k + rank)
+    return sorted(scores.items(), key=lambda item: (-item[1], item[0]))
+
+
+def is_layer_clear(
+    *,
+    top1_agree: bool,
+    relative_margins: list[float],
+    top_k_overlap: float,
+    margin_threshold: float,
+    overlap_threshold: float,
+) -> bool:
+    return (
+        top1_agree
+        and bool(relative_margins)
+        and min(relative_margins) >= margin_threshold
+        and top_k_overlap >= overlap_threshold
+    )
+
+
+def _relative_margin(hits: list[AggregatedArticleHit]) -> float | None:
+    if len(hits) < 2 or not hits[0].score:
+        return None
+    return (hits[0].score - hits[1].score) / abs(hits[0].score)
+
+
+def _online_layer_is_clear(
+    bm25: list[AggregatedArticleHit],
+    dense: list[AggregatedArticleHit],
+    *,
+    signal_k: int,
+    margin_threshold: float,
+    overlap_threshold: float,
+) -> bool:
+    bm25_ids = [item.article_id for item in bm25[:signal_k]]
+    dense_ids = [item.article_id for item in dense[:signal_k]]
+    union = set(bm25_ids) | set(dense_ids)
+    margins = [
+        value
+        for value in (_relative_margin(bm25), _relative_margin(dense))
+        if value is not None
+    ]
+    return is_layer_clear(
+        top1_agree=bool(bm25_ids and dense_ids and bm25_ids[0] == dense_ids[0]),
+        relative_margins=margins,
+        top_k_overlap=(len(set(bm25_ids) & set(dense_ids)) / len(union) if union else 0.0),
+        margin_threshold=margin_threshold,
+        overlap_threshold=overlap_threshold,
+    )
+
+
+def _validate_online_suite(
+    session: Session,
+    build_ids: dict[ArticleDiscoveryLayer, str],
+    provider: EmbeddingProvider,
+) -> tuple[str, int]:
+    missing = set(ArticleDiscoveryLayer) - set(build_ids)
+    if missing:
+        raise ValueError("缺少分层 Build：" + ", ".join(sorted(item.value for item in missing)))
+    snapshots: set[str] = set()
+    candidate_depths: set[int] = set()
+    splitter: dict[str, object] | None = None
+    for layer in ArticleDiscoveryLayer:
+        build, metadata, _ = _load_build(session, build_ids[layer], layer)
+        snapshots.add(build.corpus_snapshot)
+        candidate_depths.add(int(str(metadata.get("candidate_k"))))
+        if metadata.get("embedding") != provider.metadata:
+            raise ValueError(f"{layer.value} 层 Embedding Profile 与当前配置不一致")
+        if layer == ArticleDiscoveryLayer.ORIGINAL:
+            raw_splitter = metadata.get("splitter")
+            splitter = raw_splitter if isinstance(raw_splitter, dict) else None
+    if len(snapshots) != 1:
+        raise ValueError("分层 Build 的语料快照不一致")
+    if len(candidate_depths) != 1:
+        raise ValueError("分层 Build 的候选深度不一致")
+    if splitter is None:
+        raise ValueError("原文层 Build 缺少切分配置")
+    current_units = selected_layer_units(
+        session,
+        splitter_version=str(splitter["version"]),
+        target_chars=int(str(splitter["target_chars"])),
+        max_chars=int(str(splitter["max_chars"])),
+        tail_merge_chars=int(str(splitter["tail_merge_chars"])),
+    )
+    snapshot = next(iter(snapshots))
+    if corpus_snapshot_for_units(current_units) != snapshot:
+        raise ValueError("最新分层套件与当前已批准文章状态不一致")
+    return snapshot, next(iter(candidate_depths))
+
+
+def search_articles_with_disagreement_cascade(
+    session: Session,
+    query: str,
+    top_k: int,
+    *,
+    embedding_provider: EmbeddingProvider,
+    build_ids: dict[ArticleDiscoveryLayer, str],
+    margin_ratio_threshold: float = 0.1,
+    overlap_threshold: float = 0.5,
+    fusion_rrf_k: int = 60,
+    signal_k: int = 5,
+) -> LayeredCascadeSearchOutcome:
+    if not query.strip():
+        raise ValueError("查询不能为空")
+    if top_k <= 0 or signal_k <= 0:
+        raise ValueError("top_k 和 signal_k 必须大于 0")
+    try:
+        snapshot, candidate_k = _validate_online_suite(
+            session, build_ids, embedding_provider
+        )
+    except Exception as exc:
+        raise ValueError(
+            "默认分层文章反查索引不可用，请运行 "
+            "`uv run xifeng articles build-layered-index --candidate-k 20` 重建："
+            f"{exc}"
+        ) from exc
+
+    retrieval_k = max(top_k, signal_k)
+    activated: list[ArticleDiscoveryLayer] = []
+    channels: list[
+        tuple[ArticleDiscoveryLayer, RetrievalMode, list[AggregatedArticleHit]]
+    ] = []
+
+    def run_layer(
+        layer: ArticleDiscoveryLayer,
+    ) -> tuple[list[AggregatedArticleHit], list[AggregatedArticleHit]]:
+        activated.append(layer)
+        bm25, _ = search_article_layer(
+            session,
+            build_ids[layer],
+            layer,
+            query,
+            mode=RetrievalMode.BM25,
+            candidate_k=candidate_k,
+            top_k=retrieval_k,
+        )
+        dense, _ = search_article_layer(
+            session,
+            build_ids[layer],
+            layer,
+            query,
+            mode=RetrievalMode.DENSE,
+            embedding_provider=embedding_provider,
+            candidate_k=candidate_k,
+            top_k=retrieval_k,
+        )
+        channels.extend(((layer, RetrievalMode.BM25, bm25), (layer, RetrievalMode.DENSE, dense)))
+        return bm25, dense
+
+    overview = run_layer(ArticleDiscoveryLayer.OVERVIEW)
+    if not _online_layer_is_clear(
+        *overview,
+        signal_k=signal_k,
+        margin_threshold=margin_ratio_threshold,
+        overlap_threshold=overlap_threshold,
+    ):
+        top1_agrees = bool(
+            overview[0]
+            and overview[1]
+            and overview[0][0].article_id == overview[1][0].article_id
+        )
+        next_layer = (
+            ArticleDiscoveryLayer.KEYWORDS
+            if top1_agrees
+            else ArticleDiscoveryLayer.SUBTOPICS
+        )
+        next_hits = run_layer(next_layer)
+        if not _online_layer_is_clear(
+            *next_hits,
+            signal_k=signal_k,
+            margin_threshold=margin_ratio_threshold,
+            overlap_threshold=overlap_threshold,
+        ):
+            remaining = (
+                ArticleDiscoveryLayer.SUBTOPICS
+                if next_layer == ArticleDiscoveryLayer.KEYWORDS
+                else ArticleDiscoveryLayer.ORIGINAL
+            )
+            remaining_hits = run_layer(remaining)
+            if remaining != ArticleDiscoveryLayer.ORIGINAL and not _online_layer_is_clear(
+                *remaining_hits,
+                signal_k=signal_k,
+                margin_threshold=margin_ratio_threshold,
+                overlap_threshold=overlap_threshold,
+            ):
+                run_layer(ArticleDiscoveryLayer.ORIGINAL)
+
+    fused = article_rank_fusion(
+        [[item.article_id for item in hits] for _, _, hits in channels], fusion_rrf_k
+    )
+    documents = {item.article_id: item for item in selected_article_documents(session)}
+    results: list[ArticleSearchResult] = []
+    for article_id, score in fused[:top_k]:
+        document = documents.get(article_id)
+        if document is None:
+            raise RuntimeError(f"分层文章结果引用未知活动文章：{article_id}")
+        occurrences = [
+            (layer, mode, hit)
+            for layer, mode, hits in channels
+            for hit in hits
+            if hit.article_id == article_id
+        ]
+        bm25 = min(
+            (item for item in occurrences if item[1] == RetrievalMode.BM25),
+            key=lambda item: item[2].rank,
+            default=None,
+        )
+        dense = min(
+            (item for item in occurrences if item[1] == RetrievalMode.DENSE),
+            key=lambda item: item[2].rank,
+            default=None,
+        )
+        results.append(
+            ArticleSearchResult(
+                article_id=document.article_id,
+                version_id=document.version_id,
+                title=document.title,
+                published_at=document.published_at,
+                article_summary=document.article_summary,
+                matched_topics=_matched_topics(query, document),
+                matched_subtopics=_matched_subtopics(query, document),
+                sources=[f"{layer.value}:{mode.value}" for layer, mode, _ in occurrences],
+                rrf_score=score,
+                bm25_score=bm25[2].score if bm25 is not None else None,
+                bm25_rank=bm25[2].rank if bm25 is not None else None,
+                dense_score=dense[2].score if dense is not None else None,
+                dense_rank=dense[2].rank if dense is not None else None,
+                strategy="disagreement_cascade",
+                activated_layers=tuple(layer.value for layer in activated),
+            )
+        )
+    return LayeredCascadeSearchOutcome(results, tuple(activated), snapshot)

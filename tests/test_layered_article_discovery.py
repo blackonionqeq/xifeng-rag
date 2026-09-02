@@ -22,13 +22,18 @@ from xifeng_rag.layered_article_evaluation import (
     validate_layered_comparison,
 )
 from xifeng_rag.layered_article_search import (
+    AggregatedArticleHit,
     ArticleAggregation,
     ArticleDiscoveryLayer,
+    LayeredCascadeSearchOutcome,
     UnitSearchHit,
     aggregate_unit_hits,
+    article_rank_fusion,
     build_layered_article_indexes,
+    is_layer_clear,
     load_layered_suite,
     search_article_layer,
+    search_articles_with_disagreement_cascade,
     selected_layer_units,
 )
 from xifeng_rag.storage import (
@@ -325,6 +330,115 @@ def test_top_n_rank_fusion_caps_long_article_contribution() -> None:
         "a-1",
         "a-2",
         "a-3",
+    ]
+
+
+def _aggregated_hit(article_id: str, rank: int, score: float) -> AggregatedArticleHit:
+    return AggregatedArticleHit(
+        article_id=article_id,
+        version_id=f"layer-version-{article_id[-1]}",
+        title=f"文章 {article_id}",
+        score=score,
+        rank=rank,
+        best_unit_id=f"unit-{article_id}-{rank}",
+        best_unit_score=score,
+        best_unit_rank=rank,
+        parent_topic=None,
+        start_unit=None,
+        end_unit=None,
+        unit_count=1,
+        contributing_units=((f"unit-{article_id}-{rank}", rank, score),),
+    )
+
+
+def test_shared_clarity_and_rank_fusion_rules() -> None:
+    assert is_layer_clear(
+        top1_agree=True,
+        relative_margins=[0.2, 0.3],
+        top_k_overlap=0.5,
+        margin_threshold=0.1,
+        overlap_threshold=0.5,
+    )
+    assert not is_layer_clear(
+        top1_agree=False,
+        relative_margins=[0.2, 0.3],
+        top_k_overlap=1.0,
+        margin_threshold=0.1,
+        overlap_threshold=0.5,
+    )
+    assert article_rank_fusion([["b", "a"], ["a", "b"]], 60) == [
+        ("a", pytest.approx(1 / 61 + 1 / 62)),
+        ("b", pytest.approx(1 / 61 + 1 / 62)),
+    ]
+
+
+def test_online_disagreement_cascade_skips_keywords_and_handles_missing_subtopics(
+    database: Database,
+    layered_articles: tuple[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first, second = layered_articles
+    provider = LayerEmbeddingProvider()
+    builds = {layer: f"build-{layer.value}" for layer in ArticleDiscoveryLayer}
+    calls: list[tuple[ArticleDiscoveryLayer, RetrievalMode]] = []
+
+    monkeypatch.setattr(
+        "xifeng_rag.layered_article_search._validate_online_suite",
+        lambda session, build_ids, embedding_provider: ("snapshot", 20),
+    )
+
+    def fake_search(
+        session: object,
+        build_id: str,
+        layer: ArticleDiscoveryLayer,
+        query: str,
+        *,
+        mode: RetrievalMode,
+        **kwargs: object,
+    ) -> tuple[list[AggregatedArticleHit], dict[str, object]]:
+        calls.append((layer, mode))
+        if layer == ArticleDiscoveryLayer.OVERVIEW:
+            order = [first, second] if mode == RetrievalMode.BM25 else [second, first]
+        elif layer == ArticleDiscoveryLayer.SUBTOPICS:
+            return [], {}
+        else:
+            order = [second, first]
+        return (
+            [
+                _aggregated_hit(article_id, rank, 1.0 if rank == 1 else 0.1)
+                for rank, article_id in enumerate(order, start=1)
+            ],
+            {},
+        )
+
+    monkeypatch.setattr(
+        "xifeng_rag.layered_article_search.search_article_layer", fake_search
+    )
+    with database.session() as session:
+        outcome = search_articles_with_disagreement_cascade(
+            session,
+            "商业协作",
+            2,
+            embedding_provider=provider,
+            build_ids=builds,
+        )
+
+    assert isinstance(outcome, LayeredCascadeSearchOutcome)
+    assert outcome.activated_layers == (
+        ArticleDiscoveryLayer.OVERVIEW,
+        ArticleDiscoveryLayer.SUBTOPICS,
+        ArticleDiscoveryLayer.ORIGINAL,
+    )
+    assert ArticleDiscoveryLayer.KEYWORDS not in outcome.activated_layers
+    assert outcome.results[0].article_id == second
+    assert outcome.results[0].strategy == "disagreement_cascade"
+    assert calls == [
+        (ArticleDiscoveryLayer.OVERVIEW, RetrievalMode.BM25),
+        (ArticleDiscoveryLayer.OVERVIEW, RetrievalMode.DENSE),
+        (ArticleDiscoveryLayer.SUBTOPICS, RetrievalMode.BM25),
+        (ArticleDiscoveryLayer.SUBTOPICS, RetrievalMode.DENSE),
+        (ArticleDiscoveryLayer.ORIGINAL, RetrievalMode.BM25),
+        (ArticleDiscoveryLayer.ORIGINAL, RetrievalMode.DENSE),
     ]
 
 

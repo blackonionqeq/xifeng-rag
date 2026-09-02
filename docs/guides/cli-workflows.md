@@ -65,10 +65,17 @@ uv run xifeng overviews approve <OVERVIEW_ID> --summary-file <PATH>
 
 ```powershell
 uv run xifeng articles build-index
+uv run xifeng articles build-layered-index --candidate-k 20
 uv run xifeng articles search "记得的模糊主题" --top-k 5
+uv run xifeng articles search "记得的模糊主题" --strategy cumulative_hybrid --mode hybrid
 ```
 
-文章级搜索用于“记得主题但忘了文章”的反查。结果不是原文证据，也不参与现有 `search` 或 `ask` 的最终权重。
+文章级搜索用于“记得主题但忘了文章”的反查。默认使用最新分层套件执行
+`disagreement_cascade`：先查概括层，BM25/Dense 冲突时优先追加细话题层，否则按清晰度逐步
+追加关键词、细话题或原文层，并融合所有已触发通道。输出会显示实际触发层。没有细话题的文章
+仍可由其他层找回；需要复现旧行为时显式选择 `--strategy cumulative_hybrid`。分层套件缺失或
+失效时命令会提示重建，不会静默切换策略。结果不是原文证据，也不参与现有 `search` 或 `ask`
+的最终权重。
 
 细话题用于补充容易被单独记住的案例、局部概念和机制。它独立于关键词和不可变分块清单，
 允许整篇或任一父话题为空；只有批准后的细话题才进入文章级索引。历史文章的补充审核页必须

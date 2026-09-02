@@ -102,8 +102,10 @@ from xifeng_rag.layered_article_evaluation import (
 )
 from xifeng_rag.layered_article_search import (
     LATEST_SUITE_FILE,
+    ArticleSearchStrategy,
     build_layered_article_indexes,
     load_layered_suite,
+    search_articles_with_disagreement_cascade,
 )
 from xifeng_rag.query_rewrite import (
     NoopQueryRewriter,
@@ -1133,34 +1135,82 @@ def articles_search(
     ctx: typer.Context,
     query: Annotated[str, typer.Argument(help="想反查文章的主题描述")],
     top_k: Annotated[int, typer.Option("--top-k", min=1, max=100)] = 5,
-    mode: Annotated[RetrievalMode, typer.Option("--mode")] = RetrievalMode.HYBRID,
+    mode: Annotated[
+        RetrievalMode,
+        typer.Option("--mode", help="累计文档兼容策略的检索模式"),
+    ] = RetrievalMode.HYBRID,
+    strategy: Annotated[
+        ArticleSearchStrategy,
+        typer.Option("--strategy", help="文章反查策略"),
+    ] = (
+        ArticleSearchStrategy.DISAGREEMENT_CASCADE
+    ),
     build: Annotated[str | None, typer.Option("--build")] = None,
+    suite_path: Annotated[
+        Path | None,
+        typer.Option("--suite", help="分层索引套件；默认使用最新套件"),
+    ] = None,
     as_json: Annotated[bool, typer.Option("--json", help="输出结构化文章列表")] = False,
 ) -> None:
     """搜索相关文章；结果不是原文证据，也不进入现有问答权重。"""
     runtime = _runtime(ctx)
     provider = None
     try:
-        if mode in {RetrievalMode.DENSE, RetrievalMode.HYBRID}:
+        if strategy == ArticleSearchStrategy.DISAGREEMENT_CASCADE or mode in {
+            RetrievalMode.DENSE,
+            RetrievalMode.HYBRID,
+        }:
             provider = _embedding_provider(runtime.settings)
         with runtime.database.session() as session:
-            results = search_articles(
-                session,
-                query,
-                top_k,
-                mode=mode,
-                embedding_provider=provider,
-                build_id=build,
-                bm25_candidate_k=runtime.settings.retrieval.bm25_candidate_k,
-                dense_candidate_k=runtime.settings.retrieval.dense_candidate_k,
-                rrf_k=runtime.settings.retrieval.rrf_k,
-            )
+            if strategy == ArticleSearchStrategy.DISAGREEMENT_CASCADE:
+                if build is not None:
+                    raise ValueError("--build 只适用于 cumulative_hybrid 策略")
+                resolved_suite = (
+                    suite_path.resolve()
+                    if suite_path is not None
+                    else runtime.settings.article_index_dir / LATEST_SUITE_FILE
+                )
+                if not resolved_suite.is_file():
+                    raise FileNotFoundError(
+                        "默认分层文章反查索引不存在，请运行 "
+                        "`uv run xifeng articles build-layered-index --candidate-k 20`"
+                    )
+                assert provider is not None
+                outcome = search_articles_with_disagreement_cascade(
+                    session,
+                    query,
+                    top_k,
+                    embedding_provider=provider,
+                    build_ids=load_layered_suite(resolved_suite),
+                    fusion_rrf_k=runtime.settings.retrieval.rrf_k,
+                )
+                results = outcome.results
+                activated_layers = [item.value for item in outcome.activated_layers]
+            else:
+                if suite_path is not None:
+                    raise ValueError("--suite 只适用于 disagreement_cascade 策略")
+                results = search_articles(
+                    session,
+                    query,
+                    top_k,
+                    mode=mode,
+                    embedding_provider=provider,
+                    build_id=build,
+                    bm25_candidate_k=runtime.settings.retrieval.bm25_candidate_k,
+                    dense_candidate_k=runtime.settings.retrieval.dense_candidate_k,
+                    rrf_k=runtime.settings.retrieval.rrf_k,
+                )
+                activated_layers = []
         if as_json:
             typer.echo(json.dumps([asdict(item) for item in results], ensure_ascii=False))
             return
         if not results:
             typer.echo("没有找到相关文章")
             return
+        if activated_layers:
+            typer.echo(
+                "策略=disagreement_cascade  触发层=" + ",".join(activated_layers)
+            )
         for rank, result in enumerate(results, start=1):
             published = result.published_at or "发布时间未知"
             topics = "、".join(result.matched_topics) or "—"
