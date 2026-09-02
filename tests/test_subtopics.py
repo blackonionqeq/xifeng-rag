@@ -221,10 +221,35 @@ def test_generation_prompt_does_not_require_full_coverage(database: Database) ->
     )
     prompt = generation_prompt("标题", topics, paragraphs)
     assert "不要求覆盖父话题" in prompt
-    assert "每个父话题\n最多返回 4 个细话题" in prompt
-    assert "整篇文章不设细话题总数上限" in prompt
+    assert "最多返回 4 个细话题" not in prompt
+    assert "父话题和整篇文章都不设细话题业务数量上限" in prompt
     assert "相邻、范围重叠或表达同一机制的候选\n必须合并" in prompt
     assert "不得修改" in prompt
+
+
+def test_subtopic_schema_keeps_twenty_item_safety_limit() -> None:
+    subtopics = [
+        {
+            "title": f"细话题 {number}",
+            "start_unit": 1,
+            "end_unit": 1,
+            "summary": "简短概括。",
+        }
+        for number in range(21)
+    ]
+    with pytest.raises(ValueError, match="at most 20 items"):
+        ArticleSubtopics.model_validate(
+            {
+                "topics": [
+                    {
+                        "parent_start_unit": 1,
+                        "parent_end_unit": 1,
+                        "parent_title": "父话题",
+                        "subtopics": subtopics,
+                    }
+                ]
+            }
+        )
 
 
 def test_dashboard_discloses_scope_and_requires_confirmation_before_generation(
