@@ -249,6 +249,7 @@ class CorpusDashboardApplication:
             view_manifest = (
                 manifests_by_version.get(view_version.id) if view_version is not None else None
             )
+            original_version = indexed if indexed is not None else latest
             overview = (overviews_by_version.get(latest.id) if latest is not None else None) or (
                 overviews_by_version.get(indexed.id) if indexed is not None else None
             )
@@ -284,6 +285,14 @@ class CorpusDashboardApplication:
                         indexed is not None and latest is not None and indexed.id != latest.id
                     ),
                     "is_indexed": indexed is not None and indexed_chunk_count > 0,
+                    "original_view": (
+                        {
+                            "version_id": original_version.id,
+                            "character_count": len(original_version.canonical_text),
+                        }
+                        if original_version is not None
+                        else None
+                    ),
                     "chunk_view": (
                         {
                             "version_id": view_version.id,
@@ -364,6 +373,42 @@ class CorpusDashboardApplication:
                 "pending_overviews": overview_statuses.count(OverviewStatus.PENDING_REVIEW.value),
             },
         }
+
+    def original_text_details(self, article_id: str) -> dict[str, object]:
+        if not article_id:
+            raise ValueError("必须提供文章 ID")
+        with self.database.session() as session:
+            article = session.get(ArticleRow, article_id)
+            if article is None:
+                raise ValueError("文章不存在")
+            versions = list(
+                session.scalars(
+                    select(ArticleVersionRow)
+                    .where(
+                        ArticleVersionRow.article_id == article_id,
+                        ArticleVersionRow.active.is_(True),
+                    )
+                    .order_by(ArticleVersionRow.created_at.desc(), ArticleVersionRow.id.desc())
+                ).all()
+            )
+            if not versions:
+                raise ValueError("文章尚无可查看版本")
+            indexed = [
+                version for version in versions if version.status == VersionStatus.INDEXED.value
+            ]
+            version = (
+                max(indexed, key=lambda item: (item.created_at, item.id))
+                if indexed
+                else versions[0]
+            )
+            canonical_text = version.canonical_text
+            return {
+                "article_id": article_id,
+                "article_title": article.title,
+                "version_id": version.id,
+                "character_count": len(canonical_text),
+                "canonical_text": canonical_text,
+            }
 
     def chunk_details(self, article_id: str) -> dict[str, object]:
         if not article_id:
@@ -718,6 +763,21 @@ def _handler_for(
                 try:
                     result = application.chunk_details(article_ids[0])
                 except (ValueError, ValidationError) as exc:
+                    self._json_error(HTTPStatus.CONFLICT, str(exc))
+                    return
+                self._json_response(HTTPStatus.OK, result)
+                return
+            if parsed.path == "/api/original-text":
+                if not self._token_valid(parsed.query):
+                    self._json_error(HTTPStatus.FORBIDDEN, "管理令牌无效")
+                    return
+                article_ids = parse_qs(parsed.query).get("article_id", [])
+                if len(article_ids) != 1:
+                    self._json_error(HTTPStatus.BAD_REQUEST, "必须提供唯一的文章 ID")
+                    return
+                try:
+                    result = application.original_text_details(article_ids[0])
+                except ValueError as exc:
                     self._json_error(HTTPStatus.CONFLICT, str(exc))
                     return
                 self._json_response(HTTPStatus.OK, result)

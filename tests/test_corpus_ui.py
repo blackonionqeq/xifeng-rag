@@ -198,6 +198,10 @@ def test_dashboard_aggregates_latest_and_indexed_versions(
     assert article["indexed_version_id"] == indexed_version_id
     assert article["has_pending_update"] is True
     assert article["indexed_chunk_count"] == 1
+    assert article["original_view"] == {
+        "version_id": indexed_version_id,
+        "character_count": len("# 自造文章\n\n第一段。\n\n第二段。"),
+    }
     assert article["chunk_view"] == {
         "version_id": indexed_version_id,
         "manifest_id": "manifest_indexed",
@@ -207,6 +211,31 @@ def test_dashboard_aggregates_latest_and_indexed_versions(
     assert article["published_at"] is None
     assert article["overview"] is None
     assert article["pending_proposals"][0]["proposal_id"] == "proposal_pending"
+
+
+def test_dashboard_original_text_prefers_indexed_then_falls_back_to_latest(
+    database: Database, tmp_path: Path
+) -> None:
+    corpus, indexed_version_id, latest_version_id = _dashboard_fixture(database, tmp_path)
+    application = CorpusDashboardApplication(
+        database, corpus, (), tmp_path / "reviews", tmp_path / "indexes"
+    )
+
+    indexed_payload = application.original_text_details("sn:dashboard")
+
+    assert indexed_payload["version_id"] == indexed_version_id
+    assert indexed_payload["canonical_text"] == "# 自造文章\n\n第一段。\n\n第二段。"
+    assert indexed_payload["character_count"] == len(indexed_payload["canonical_text"])
+
+    with database.session() as session:
+        indexed = session.get(ArticleVersionRow, indexed_version_id)
+        assert indexed is not None
+        indexed.status = VersionStatus.APPROVED.value
+
+    latest_payload = application.original_text_details("sn:dashboard")
+
+    assert latest_payload["version_id"] == latest_version_id
+    assert latest_payload["canonical_text"] == "新版本一。\n\n新版本二。"
 
 
 def test_dashboard_chunk_details_are_read_only_and_use_only_approved_subtopics(
@@ -341,6 +370,7 @@ def test_dashboard_chunk_details_http_requires_token_and_returns_current_manifes
     thread.start()
     base = url.split("/?", maxsplit=1)[0]
     endpoint = f"{base}/api/chunks?article_id=sn%3Adashboard"
+    original_endpoint = f"{base}/api/original-text?article_id=sn%3Adashboard"
     try:
         with pytest.raises(urllib.error.HTTPError) as exc_info:
             urllib.request.urlopen(endpoint, timeout=2)
@@ -351,6 +381,18 @@ def test_dashboard_chunk_details_http_requires_token_and_returns_current_manifes
             payload = json.loads(response.read())
         assert payload["version_id"] == indexed_version_id
         assert payload["topic_count"] == 2
+
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(original_endpoint, timeout=2)
+        assert exc_info.value.code == 403
+
+        request = urllib.request.Request(
+            original_endpoint, headers={"X-Corpus-Token": "dashboard-secret"}
+        )
+        with urllib.request.urlopen(request, timeout=2) as response:
+            original_payload = json.loads(response.read())
+        assert original_payload["version_id"] == indexed_version_id
+        assert original_payload["canonical_text"] == "# 自造文章\n\n第一段。\n\n第二段。"
     finally:
         server.shutdown()
         server.server_close()
@@ -546,10 +588,13 @@ def test_dashboard_page_has_no_remote_resources() -> None:
     assert "/api/scan" in combined
     assert "/api/reviews" in combined
     assert "/api/chunks" in combined
+    assert "/api/original-text" in combined
     assert "X-Corpus-Token" in combined
     assert 'id="subtopic-dialog"' in combined
     assert 'id="chunk-dialog"' in combined
+    assert 'id="original-dialog"' in combined
     assert "查看分块" in combined
+    assert "查看原文" in combined
     assert "暂无已批准细话题" in combined
     assert "请核对外发范围并确认" in combined
     assert "正在生成细话题" in combined

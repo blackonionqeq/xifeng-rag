@@ -194,6 +194,33 @@ async function openChunkViewer(article, button) {
   }
 }
 
+function renderOriginalText(payload) {
+  document.getElementById("original-dialog-title").textContent = payload.article_title;
+  document.getElementById("original-dialog-meta").textContent =
+    `版本 ${shortId(payload.version_id)} · ${payload.character_count} 字符`;
+  document.getElementById("original-text").textContent = payload.canonical_text;
+}
+
+async function openOriginalViewer(article, button) {
+  const status = document.getElementById("operation-status");
+  button.disabled = true;
+  status.textContent = `正在读取原文：${article.title}`;
+  try {
+    const response = await request(
+      `/api/original-text?article_id=${encodeURIComponent(article.article_id)}`,
+    );
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "原文加载失败");
+    renderOriginalText(payload);
+    document.getElementById("original-dialog").showModal();
+    status.textContent = `已加载原文：${article.title}`;
+  } catch (error) {
+    status.textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
+}
+
 function reviewAction(article) {
   const wrapper = document.createElement("div");
   wrapper.className = "review-action";
@@ -222,6 +249,14 @@ function reviewAction(article) {
     });
     group.append(select, button);
     wrapper.append(group);
+  }
+  if (article.original_view) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "small secondary";
+    button.textContent = "查看原文";
+    button.addEventListener("click", () => openOriginalViewer(article, button));
+    wrapper.append(button);
   }
   if (article.chunk_view) {
     const button = document.createElement("button");
@@ -373,6 +408,12 @@ document.getElementById("chunk-dialog-close").addEventListener("click", () => {
   document.getElementById("chunk-dialog").close();
 });
 document.getElementById("chunk-dialog").addEventListener("click", (event) => {
+  if (event.target === event.currentTarget) event.currentTarget.close();
+});
+document.getElementById("original-dialog-close").addEventListener("click", () => {
+  document.getElementById("original-dialog").close();
+});
+document.getElementById("original-dialog").addEventListener("click", (event) => {
   if (event.target === event.currentTarget) event.currentTarget.close();
 });
 

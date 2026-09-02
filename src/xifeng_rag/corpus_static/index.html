@@ -104,6 +104,19 @@
       <section id="chunk-list" class="chunk-list" aria-live="polite"></section>
     </div>
   </dialog>
+  <dialog id="original-dialog" class="original-dialog" aria-labelledby="original-dialog-title">
+    <div class="dialog-body">
+      <div class="chunk-dialog-heading">
+        <div>
+          <p class="eyebrow">当前可用的规范正文</p>
+          <h2 id="original-dialog-title">查看原文</h2>
+          <p id="original-dialog-meta" class="muted"></p>
+        </div>
+        <button id="original-dialog-close" class="quiet" type="button">关闭</button>
+      </div>
+      <pre id="original-text" class="original-text" aria-live="polite"></pre>
+    </div>
+  </dialog>
   <script src="/static/app.js" defer></script>
 </body>
 </html>
