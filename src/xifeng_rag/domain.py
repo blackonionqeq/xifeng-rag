@@ -30,6 +30,13 @@ class OverviewStatus(StrEnum):
     SUPERSEDED = "superseded"
 
 
+class SubtopicSetStatus(StrEnum):
+    PENDING_REVIEW = "pending_review"
+    APPROVED = "approved"
+    SUPERSEDED = "superseded"
+    FAILED = "failed"
+
+
 class ContentRole(StrEnum):
     SUBSTANTIVE = "substantive"
     BOILERPLATE = "boilerplate"
@@ -83,6 +90,41 @@ class ParagraphData(BaseModel):
     source_end: int = Field(gt=0)
 
 
+class Subtopic(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    title: str = Field(min_length=1, max_length=200)
+    start_unit: int = Field(ge=1)
+    end_unit: int = Field(ge=1)
+    summary: str = Field(min_length=1, max_length=1000)
+
+    @model_validator(mode="after")
+    def valid_range(self) -> Subtopic:
+        if self.end_unit < self.start_unit:
+            raise ValueError("细话题结束单元不能早于开始单元")
+        return self
+
+
+class TopicSubtopics(BaseModel):
+    parent_start_unit: int = Field(ge=1)
+    parent_end_unit: int = Field(ge=1)
+    parent_title: str = Field(min_length=1, max_length=200)
+    subtopics: list[Subtopic] = Field(default_factory=list, max_length=20)
+
+    @model_validator(mode="after")
+    def ranges_within_parent(self) -> TopicSubtopics:
+        if self.parent_end_unit < self.parent_start_unit:
+            raise ValueError("父话题范围非法")
+        for item in self.subtopics:
+            if item.start_unit < self.parent_start_unit or item.end_unit > self.parent_end_unit:
+                raise ValueError("细话题范围必须位于父话题范围内")
+        return self
+
+
+class ArticleSubtopics(BaseModel):
+    topics: list[TopicSubtopics] = Field(default_factory=list, max_length=20)
+
+
 class Topic(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
@@ -91,6 +133,7 @@ class Topic(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     summary: str = Field(min_length=1, max_length=2000)
     keywords: list[str] = Field(min_length=1, max_length=20)
+    subtopics: list[Subtopic] = Field(default_factory=list, max_length=20)
     include_in_index: bool = True
     # Compatibility input only. New reviews and manifests persist the explicit
     # indexing decision instead of a semantic content classification.
@@ -113,6 +156,9 @@ class Topic(BaseModel):
             raise ValueError("话题块结束段落不能早于开始段落")
         if any(not keyword.strip() for keyword in self.keywords):
             raise ValueError("关键词不能为空")
+        for subtopic in self.subtopics:
+            if subtopic.start_unit < self.start_paragraph or subtopic.end_unit > self.end_paragraph:
+                raise ValueError("细话题范围必须位于父话题范围内")
         return self
 
 
@@ -127,6 +173,7 @@ class GeneratedTopic(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     summary: str = Field(min_length=1, max_length=2000)
     keywords: list[str] = Field(min_length=1, max_length=20)
+    subtopics: list[Subtopic] = Field(default_factory=list, max_length=20)
 
     @model_validator(mode="after")
     def nonempty_keywords(self) -> GeneratedTopic:
@@ -193,9 +240,7 @@ class EvidenceAssessment(BaseModel):
     top1_top3_margin: float | None = None
     top1_dual_retrieval: bool | None = None
     dual_retrieval_rate_at_k: float | None = Field(default=None, ge=0, le=1)
-    shared_by_original_and_rewrite_rate_at_k: float | None = Field(
-        default=None, ge=0, le=1
-    )
+    shared_by_original_and_rewrite_rate_at_k: float | None = Field(default=None, ge=0, le=1)
     top1_shared_by_original_and_rewrite: bool | None = None
     diagnostic: str | None = None
 

@@ -5,6 +5,7 @@ import secrets
 import threading
 import webbrowser
 from collections import defaultdict
+from collections.abc import Callable
 from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -17,7 +18,13 @@ from sqlalchemy import func, select
 
 from xifeng_rag.article_overviews import approve_article_overview
 from xifeng_rag.corpus import discover_markdown, scan_corpus
-from xifeng_rag.domain import OverviewStatus, ProposalStatus, VersionStatus
+from xifeng_rag.domain import (
+    ArticleSubtopics,
+    OverviewStatus,
+    ProposalStatus,
+    SubtopicSetStatus,
+    VersionStatus,
+)
 from xifeng_rag.review_ui import (
     ArticleIndexBuilder,
     IndexBuilder,
@@ -31,8 +38,17 @@ from xifeng_rag.storage import (
     ArticleVersionRow,
     ChunkProposalRow,
     Database,
+    ParagraphRow,
+    SubtopicSetRow,
     TopicChunkRow,
 )
+from xifeng_rag.structured_generation import StructuredGenerator
+from xifeng_rag.subtopic_review_ui import (
+    SubtopicReviewApplication,
+    SubtopicReviewHTTPServer,
+    create_subtopic_review_server,
+)
+from xifeng_rag.subtopics import generate_for_existing_article, pending_subtopics
 
 MAX_REQUEST_BYTES = 64 * 1024
 STATIC_DIR = Path(__file__).with_name("corpus_static")
@@ -58,6 +74,8 @@ class CorpusDashboardApplication:
         *,
         article_index_dir: Path | None = None,
         article_index_builder: ArticleIndexBuilder | None = None,
+        subtopic_generator_factory: Callable[[str], StructuredGenerator] | None = None,
+        subtopic_model: str = "gpt-5.6-terra",
         token: str | None = None,
     ) -> None:
         self.database = database
@@ -68,10 +86,13 @@ class CorpusDashboardApplication:
         self.index_builder = index_builder
         self.article_index_dir = article_index_dir
         self.article_index_builder = article_index_builder
+        self.subtopic_generator_factory = subtopic_generator_factory
+        self.subtopic_model = subtopic_model
         self.token = token or secrets.token_urlsafe(32)
         self._scan_lock = threading.Lock()
         self._child_lock = threading.Lock()
         self._review_servers: list[tuple[ReviewHTTPServer, threading.Thread]] = []
+        self._subtopic_review_servers: list[tuple[SubtopicReviewHTTPServer, threading.Thread]] = []
 
     def articles(self) -> dict[str, object]:
         with self.database.session() as session:
@@ -156,6 +177,28 @@ class CorpusDashboardApplication:
             overviews_by_version: dict[str, ArticleOverviewRow] = {}
             for overview in overview_rows:
                 overviews_by_version.setdefault(overview.version_id, overview)
+            subtopic_rows = (
+                list(
+                    session.scalars(
+                        select(SubtopicSetRow)
+                        .where(
+                            SubtopicSetRow.version_id.in_(indexed_ids),
+                            SubtopicSetRow.status.in_(
+                                [
+                                    SubtopicSetStatus.PENDING_REVIEW.value,
+                                    SubtopicSetStatus.APPROVED.value,
+                                ]
+                            ),
+                        )
+                        .order_by(SubtopicSetRow.created_at.desc())
+                    ).all()
+                )
+                if indexed_ids
+                else []
+            )
+            subtopics_by_version: dict[str, SubtopicSetRow] = {}
+            for row in subtopic_rows:
+                subtopics_by_version.setdefault(row.version_id, row)
 
         items: list[dict[str, object]] = []
         for article in article_rows:
@@ -174,13 +217,10 @@ class CorpusDashboardApplication:
                 else []
             )
             indexed_chunk_count = chunk_counts.get(indexed.id, 0) if indexed is not None else 0
-            overview = (
-                overviews_by_version.get(latest.id)
-                if latest is not None
-                else None
-            ) or (
+            overview = (overviews_by_version.get(latest.id) if latest is not None else None) or (
                 overviews_by_version.get(indexed.id) if indexed is not None else None
             )
+            subtopic_set = subtopics_by_version.get(indexed.id) if indexed is not None else None
             items.append(
                 {
                     "article_id": article.id,
@@ -212,6 +252,20 @@ class CorpusDashboardApplication:
                         indexed is not None and latest is not None and indexed.id != latest.id
                     ),
                     "is_indexed": indexed is not None and indexed_chunk_count > 0,
+                    "subtopics": (
+                        {
+                            "set_id": subtopic_set.id,
+                            "status": subtopic_set.status,
+                            "count": sum(
+                                len(parent.subtopics)
+                                for parent in ArticleSubtopics.model_validate_json(
+                                    subtopic_set.subtopics_json
+                                ).topics
+                            ),
+                        }
+                        if subtopic_set is not None
+                        else None
+                    ),
                     "overview": (
                         {
                             "overview_id": overview.id,
@@ -228,9 +282,7 @@ class CorpusDashboardApplication:
             )
 
         active_count = sum(bool(item["source_active"]) for item in items)
-        indexed_count = sum(
-            bool(item["source_active"] and item["is_indexed"]) for item in items
-        )
+        indexed_count = sum(bool(item["source_active"] and item["is_indexed"]) for item in items)
         pending_count = sum(
             bool(
                 item["source_active"]
@@ -264,9 +316,7 @@ class CorpusDashboardApplication:
                     round(indexed_count * 100 / active_count, 1) if active_count else 0.0
                 ),
                 "approved_overviews": overview_statuses.count(OverviewStatus.APPROVED.value),
-                "pending_overviews": overview_statuses.count(
-                    OverviewStatus.PENDING_REVIEW.value
-                ),
+                "pending_overviews": overview_statuses.count(OverviewStatus.PENDING_REVIEW.value),
             },
         }
 
@@ -357,11 +407,88 @@ class CorpusDashboardApplication:
             self._review_servers.append((server, thread))
         return {"url": url, "message": "审核页面已启动"}
 
+    def subtopic_disclosure(self, body: object) -> dict[str, object]:
+        if not isinstance(body, dict) or not isinstance(body.get("version_id"), str):
+            raise ValueError("必须提供已索引文章版本")
+        version_id = body["version_id"]
+        with self.database.session() as session:
+            version = session.get(ArticleVersionRow, version_id)
+            article = session.get(ArticleRow, version.article_id) if version else None
+            if version is None or article is None or not version.active or not article.active:
+                raise ValueError("文章或版本不存在")
+            if version.status != VersionStatus.INDEXED.value:
+                raise ValueError("只能给当前已索引版本补充细话题")
+            unit_count = session.scalar(
+                select(func.count())
+                .select_from(TopicChunkRow)
+                .where(TopicChunkRow.version_id == version_id)
+            )
+            paragraph_count = session.scalar(
+                select(func.count())
+                .select_from(ParagraphRow)
+                .where(ParagraphRow.version_id == version_id)
+            )
+            pending = pending_subtopics(session, version_id)
+            return {
+                "article_title": article.title,
+                "version_id": version.id,
+                "character_count": len(version.canonical_text),
+                "unit_count": paragraph_count or 0,
+                "topic_count": unit_count or 0,
+                "provider": "codex-cli",
+                "model": self.subtopic_model,
+                "max_requests": 1,
+                "has_pending_draft": pending is not None,
+            }
+
+    def generate_or_review_subtopics(self, body: object) -> dict[str, object]:
+        if (
+            not isinstance(body, dict)
+            or body.get("confirmed") is not True
+            or not isinstance(body.get("version_id"), str)
+        ):
+            raise ValueError("必须明确确认单篇细话题生成")
+        version_id = body["version_id"]
+        with self.database.session() as session:
+            pending = pending_subtopics(session, version_id)
+            if pending is None:
+                if self.subtopic_generator_factory is None:
+                    raise ValueError("Codex 细话题生成器未配置")
+                generator = self.subtopic_generator_factory(self.subtopic_model)
+                pending = generate_for_existing_article(
+                    session,
+                    version_id,
+                    generator,
+                    provider_id="codex-cli",
+                    model_id=self.subtopic_model,
+                )
+            set_id = pending.id
+        application = SubtopicReviewApplication(
+            self.database,
+            set_id,
+            self.review_dir,
+            article_index_dir=self.article_index_dir,
+            article_index_builder=self.article_index_builder,
+        )
+        server, url = create_subtopic_review_server(application)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        with self._child_lock:
+            self._subtopic_review_servers.append((server, thread))
+        return {"url": url, "message": "细话题审核页面已启动", "set_id": set_id}
+
     def shutdown_children(self) -> None:
         with self._child_lock:
             children = list(self._review_servers)
             self._review_servers.clear()
+            subtopic_children = list(self._subtopic_review_servers)
+            self._subtopic_review_servers.clear()
         for server, thread in children:
+            if thread.is_alive():
+                server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+        for server, thread in subtopic_children:
             if thread.is_alive():
                 server.shutdown()
             server.server_close()
@@ -390,6 +517,8 @@ def run_corpus_dashboard(
     *,
     article_index_dir: Path | None = None,
     article_index_builder: ArticleIndexBuilder | None = None,
+    subtopic_generator_factory: Callable[[str], StructuredGenerator] | None = None,
+    subtopic_model: str = "gpt-5.6-terra",
     open_browser: bool = True,
 ) -> None:
     application = CorpusDashboardApplication(
@@ -401,6 +530,8 @@ def run_corpus_dashboard(
         index_builder,
         article_index_dir=article_index_dir,
         article_index_builder=article_index_builder,
+        subtopic_generator_factory=subtopic_generator_factory,
+        subtopic_model=subtopic_model,
     )
     server, url = create_corpus_dashboard_server(application)
     print(f"本地语料管理地址：{url}")
@@ -452,6 +583,8 @@ def _handler_for(
                 "/api/scan",
                 "/api/reviews",
                 "/api/overviews/approve",
+                "/api/subtopics/disclosure",
+                "/api/subtopics/generate",
                 "/api/shutdown",
             }:
                 self._json_error(HTTPStatus.NOT_FOUND, "接口不存在")
@@ -504,6 +637,28 @@ def _handler_for(
                     return
                 self._json_response(HTTPStatus.OK, result)
                 return
+            if parsed.path == "/api/subtopics/disclosure":
+                try:
+                    result = application.subtopic_disclosure(body)
+                except ValueError as exc:
+                    self._json_error(HTTPStatus.CONFLICT, str(exc))
+                    return
+                self._json_response(HTTPStatus.OK, result)
+                return
+            if parsed.path == "/api/subtopics/generate":
+                try:
+                    result = application.generate_or_review_subtopics(body)
+                except ValueError as exc:
+                    self._json_error(HTTPStatus.CONFLICT, str(exc))
+                    return
+                except Exception as exc:
+                    self._json_error(
+                        HTTPStatus.INTERNAL_SERVER_ERROR,
+                        f"细话题生成失败：{type(exc).__name__}",
+                    )
+                    return
+                self._json_response(HTTPStatus.OK, result)
+                return
             self._json_response(
                 HTTPStatus.OK, {"message": "语料管理服务已关闭，可以安全关闭此标签页"}
             )
@@ -525,9 +680,7 @@ def _handler_for(
 
         def _query_token_valid(self, query: str) -> bool:
             values = parse_qs(query).get("token", [])
-            return len(values) == 1 and secrets.compare_digest(
-                values[0], application.token
-            )
+            return len(values) == 1 and secrets.compare_digest(values[0], application.token)
 
         def _token_valid(self, query: str) -> bool:
             supplied = self.headers.get("X-Corpus-Token", "")

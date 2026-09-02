@@ -58,6 +58,17 @@ def test_fresh_database_has_article_overviews_and_publication_time(database: Dat
         "prompt_version",
     } <= overview_columns
     assert inspector.has_table("article_index_builds")
+    assert inspector.has_table("subtopic_sets")
+    subtopic_columns = {item["name"] for item in inspector.get_columns("subtopic_sets")}
+    assert {
+        "version_id",
+        "manifest_id",
+        "source_proposal_id",
+        "status",
+        "subtopics_json",
+        "diagnostics_json",
+        "generation_json",
+    } <= subtopic_columns
 
 
 def test_evaluation_curation_migration_preserves_existing_runs(tmp_path: Path) -> None:

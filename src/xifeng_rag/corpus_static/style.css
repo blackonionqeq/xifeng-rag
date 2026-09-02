@@ -82,7 +82,8 @@ td small { margin-top: .25rem; color: #8a8e89; font-family: monospace; }
 .status-pending_review, .update { color: #805018; background: #f3e4cd; }
 .status-needs_cleanup_review, .missing { color: #843f3a; background: #f2dcd9; }
 .version-cell span { display: block; color: #666d68; font: .75rem/1.55 monospace; white-space: nowrap; }
-.review-action { display: flex; min-width: 13rem; gap: .4rem; }
+.review-action { display: flex; min-width: 13rem; gap: .4rem; flex-direction: column; align-items: flex-start; }
+.review-action > div { display: flex; gap: .4rem; }
 .review-action select { margin: 0; }
 .empty-state { padding: 2rem; text-align: center; color: #777d78; }
 

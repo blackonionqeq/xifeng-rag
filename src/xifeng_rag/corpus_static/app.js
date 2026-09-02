@@ -120,37 +120,108 @@ async function openReview(article, proposalId, tab) {
 }
 
 function reviewAction(article) {
-  if (!article.pending_proposals.length) {
-    const empty = document.createElement("span");
-    empty.className = "muted";
-    empty.textContent = "—";
-    return empty;
-  }
   const wrapper = document.createElement("div");
   wrapper.className = "review-action";
-  const select = document.createElement("select");
-  select.setAttribute("aria-label", `选择 ${article.title} 的待审提案`);
-  article.pending_proposals.forEach((proposal) => {
-    const option = document.createElement("option");
-    option.value = proposal.proposal_id;
-    option.textContent = `${proposal.provider_id}/${proposal.model_id}`;
-    option.title = `${proposal.prompt_version} · ${formatTime(proposal.created_at)}`;
-    select.append(option);
-  });
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "small";
-  button.textContent = "审核";
-  button.addEventListener("click", () => {
-    const tab = window.open("about:blank", "_blank");
-    if (!tab) {
-      document.getElementById("operation-status").textContent = "浏览器阻止了新标签页，请允许弹窗后重试";
+  if (article.pending_proposals.length) {
+    const group = document.createElement("div");
+    const select = document.createElement("select");
+    select.setAttribute("aria-label", `选择 ${article.title} 的待审提案`);
+    article.pending_proposals.forEach((proposal) => {
+      const option = document.createElement("option");
+      option.value = proposal.proposal_id;
+      option.textContent = `${proposal.provider_id}/${proposal.model_id}`;
+      option.title = `${proposal.prompt_version} · ${formatTime(proposal.created_at)}`;
+      select.append(option);
+    });
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "small";
+    button.textContent = "审核分块";
+    button.addEventListener("click", () => {
+      const tab = window.open("about:blank", "_blank");
+      if (!tab) {
+        document.getElementById("operation-status").textContent = "浏览器阻止了新标签页，请允许弹窗后重试";
+        return;
+      }
+      openReview(article, select.value, tab);
+    });
+    group.append(select, button);
+    wrapper.append(group);
+  }
+  if (article.is_indexed) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "small secondary";
+    button.textContent = article.subtopics?.status === "pending_review"
+      ? "继续审核细话题"
+      : article.subtopics?.status === "approved" ? "重新生成细话题" : "补充细话题";
+    button.addEventListener("click", () => openSubtopicReview(article, button));
+    wrapper.append(button);
+    if (article.subtopics) {
+      const meta = document.createElement("small");
+      meta.textContent = `${article.subtopics.status === "approved" ? "已批准" : "待审核"} · ${article.subtopics.count} 个`;
+      wrapper.append(meta);
+    }
+  }
+  if (!wrapper.children.length) {
+    wrapper.textContent = "—";
+    wrapper.classList.add("muted");
+  }
+  return wrapper;
+}
+
+async function openSubtopicReview(article, button) {
+  const status = document.getElementById("operation-status");
+  button.disabled = true;
+  const tab = window.open("about:blank", "_blank");
+  if (!tab) {
+    status.textContent = "浏览器阻止了新标签页，请允许弹窗后重试";
+    button.disabled = false;
+    return;
+  }
+  try {
+    const disclosureResponse = await request("/api/subtopics/disclosure", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ version_id: article.indexed_version_id }),
+    });
+    const disclosure = await disclosureResponse.json();
+    if (!disclosureResponse.ok) throw new Error(disclosure.error || "无法读取外发范围");
+    const message = disclosure.has_pending_draft
+      ? `已有待审细话题草案，不会再次发送正文。\n\n文章：${disclosure.article_title}\n版本：${disclosure.version_id}\n\n继续审核？`
+      : [
+          `文章：${disclosure.article_title}`,
+          `版本：${disclosure.version_id}`,
+          `清洗后正文：${disclosure.character_count} 字符，${disclosure.unit_count} 个原子单元`,
+          `外部服务：OpenAI Codex CLI（复用当前 ChatGPT 登录）`,
+          `模型：${disclosure.model}`,
+          `本次最多发送 ${disclosure.max_requests} 次完整清洗后正文。`,
+          "训练使用取决于当前 ChatGPT 账户的数据控制设置。",
+          "",
+          "确认发送并生成细话题草案？",
+        ].join("\n");
+    if (!window.confirm(message)) {
+      tab.close();
+      status.textContent = "已取消，未发送正文。";
       return;
     }
-    openReview(article, select.value, tab);
-  });
-  wrapper.append(select, button);
-  return wrapper;
+    status.textContent = disclosure.has_pending_draft ? "正在启动细话题审核…" : "正在调用 Codex 生成细话题…";
+    const response = await request("/api/subtopics/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ version_id: article.indexed_version_id, confirmed: true }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "细话题生成失败");
+    tab.location = payload.url;
+    status.textContent = `${payload.message}：${article.title}`;
+    await loadArticles();
+  } catch (error) {
+    tab.close();
+    status.textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
 }
 
 async function approveOverview(article, textarea, button) {

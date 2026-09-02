@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>西风细话题审核</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <div><p class="eyebrow">可选反查增强</p><h1 id="article-title">正在加载…</h1><p id="metadata"></p></div>
+    <div class="actions"><span id="status"></span><button id="save">保存草案</button><button id="approve" disabled>批准并更新文章索引</button></div>
+  </header>
+  <main><section><h2>原子单元</h2><div id="paragraphs"></div></section><aside><h2>细话题（不会修改现有分块）</h2><div id="topics"></div></aside></main>
+  <template id="topic-template"><article class="topic"><h3></h3><p class="range"></p><div class="subtopics"></div><button class="add" type="button">添加细话题</button></article></template>
+  <template id="subtopic-template"><article class="subtopic"><label>细话题<input class="title" required></label><div class="units"><label>起始<input class="start" type="number" min="1" required></label><label>结束<input class="end" type="number" min="1" required></label></div><label>内容要点<textarea class="summary" rows="2" required></textarea></label><button class="remove" type="button">删除</button></article></template>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

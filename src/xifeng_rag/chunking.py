@@ -40,6 +40,7 @@ from xifeng_rag.storage import (
 )
 from xifeng_rag.structured_generation import CodexCliClient as CodexCliClient
 from xifeng_rag.structured_generation import GenerationResult, StructuredGenerator
+from xifeng_rag.subtopics import create_joint_approved_subtopics
 
 PROMPT_VERSION = "topic-segmentation-v8-joint-overview"
 SCHEMA_VERSION = "topic-proposal-v4-joint-overview"
@@ -60,10 +61,13 @@ DEFAULT_SEGMENTATION_INSTRUCTION = """你为一篇付费长文章提出单层话
    可以只有一个话题。阅读提示、付费说明或单句转折不要被机械拆成多个小话题。
 6. 清洗后若仍意外出现文末文章目录、推广区或相关文章链接列表，它不属于正文顶层话题，
    必须与最后一个实质话题分开，不能把目录内容写进正文话题的标题、概括或关键词。
-7. 当前只做单层顶层分块，不输出案例或解释组成的子话题，也不输出父子关系。
+7. 当前只做单层顶层分块。每个顶层话题可以额外输出可选 subtopics，用来记录用户可能单独
+   记住的具体案例、局部概念、机制或特殊表述。细话题不要求覆盖父话题；没有合适内容时返回
+   空数组。不要把每句话都概括为细话题。
 8. end_unit 必须严格递增，最后一个 end_unit 必须等于全文最后一个单元编号。
-9. 每个话题只返回 end_unit、简短话题标题、忠实概括和关键词，不复制原文，也不要把概括
-   伪装为作者原话。是否进入索引由用户审核决定，不要输出内容角色或索引决定。"""
+9. 每个细话题只返回简短 title、精确 start_unit/end_unit 和一句忠实 summary，范围必须位于
+   所属顶层话题内。顶层和细话题都不复制原文，也不要把概括伪装为作者原话。
+   是否进入索引由用户审核决定，不要输出内容角色或索引决定。"""
 
 JOINT_OVERVIEW_INSTRUCTION = """同时根据本次收到的完整原文独立生成 article_summary：
 1. 先说明文章核心判断，再覆盖主要论证路径和对文章反查有帮助的重要延伸主题。
@@ -94,10 +98,34 @@ def ollama_topic_schema() -> dict[str, object]:
                         "title": {"type": "string"},
                         "summary": {"type": "string"},
                         "keywords": {"type": "array", "items": {"type": "string"}},
+                        "subtopics": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "title": {"type": "string"},
+                                    "start_unit": {"type": "integer"},
+                                    "end_unit": {"type": "integer"},
+                                    "summary": {"type": "string"},
+                                },
+                                "required": [
+                                    "title",
+                                    "start_unit",
+                                    "end_unit",
+                                    "summary",
+                                ],
+                            },
+                        },
                     },
-                    "required": ["end_unit", "title", "summary", "keywords"],
+                    "required": [
+                        "end_unit",
+                        "title",
+                        "summary",
+                        "keywords",
+                        "subtopics",
+                    ],
                 },
-            }
+            },
         },
         "required": ["article_summary", "topics"],
     }
@@ -256,9 +284,7 @@ def _paragraphs(session: Session, version_id: str) -> list[ParagraphRow]:
     )
 
 
-def _residual_catalog_start(
-    paragraphs: list[ParagraphRow], links_json: str
-) -> int | None:
+def _residual_catalog_start(paragraphs: list[ParagraphRow], links_json: str) -> int | None:
     try:
         links = json.loads(links_json)
     except json.JSONDecodeError as exc:
@@ -339,9 +365,10 @@ def _retry_instruction(exc: Exception) -> str:
 
 def _normalize_generated_topics(
     generated: GeneratedTopicProposal, unit_count: int
-) -> TopicProposal:
+) -> tuple[TopicProposal, list[dict[str, object]]]:
     expected_start = 1
     normalized_topics: list[Topic] = []
+    subtopic_diagnostics: list[dict[str, object]] = []
     for index, topic in enumerate(generated.topics, start=1):
         if topic.end_unit < expected_start:
             raise TopicCoverageError(
@@ -349,6 +376,18 @@ def _normalize_generated_topics(
             )
         if topic.end_unit > unit_count:
             raise TopicCoverageError([f"第 {index} 块结束单元 {topic.end_unit} 越界"])
+        valid_subtopics = []
+        for subtopic_index, subtopic in enumerate(topic.subtopics, start=1):
+            if subtopic.start_unit < expected_start or subtopic.end_unit > topic.end_unit:
+                subtopic_diagnostics.append(
+                    {
+                        "type": "invalid_subtopic_range",
+                        "topic_index": index,
+                        "subtopic_index": subtopic_index,
+                    }
+                )
+                continue
+            valid_subtopics.append(subtopic)
         normalized_topics.append(
             Topic(
                 start_paragraph=expected_start,
@@ -356,13 +395,14 @@ def _normalize_generated_topics(
                 title=topic.title,
                 summary=topic.summary,
                 keywords=topic.keywords,
+                subtopics=valid_subtopics,
                 include_in_index=True,
             )
         )
         expected_start = topic.end_unit + 1
     if expected_start != unit_count + 1:
         raise TopicCoverageError([f"分块未覆盖到最后单元 {unit_count}"])
-    return TopicProposal(topics=normalized_topics)
+    return TopicProposal(topics=normalized_topics), subtopic_diagnostics
 
 
 def propose_chunks(
@@ -437,7 +477,8 @@ def propose_chunks(
         try:
             result = generator.generate(attempt_prompt, ollama_topic_schema())
             generated = GeneratedTopicProposal.model_validate_json(result.content)
-            proposal = _normalize_generated_topics(generated, len(paragraphs))
+            proposal, subtopic_diagnostics = _normalize_generated_topics(generated, len(paragraphs))
+            diagnostics.extend(subtopic_diagnostics)
             coverage_errors = validate_topic_coverage(proposal, len(paragraphs))
             if coverage_errors:
                 raise TopicCoverageError(coverage_errors)
@@ -580,11 +621,23 @@ def approve_manifest(session: Session, manifest_path: Path) -> str:
         if not isinstance(summary_value, str):
             raise ValueError("联合分块审核文件缺少文章整体概括")
         joint_summary = summary_value
+    core_proposal = TopicProposal(
+        topics=[topic.model_copy(update={"subtopics": []}, deep=True) for topic in proposal.topics]
+    )
     manifest_id = stable_id(
-        "manifest", proposal_id, sha256_text(proposal.model_dump_json()), length=32
+        "manifest", proposal_id, sha256_text(core_proposal.model_dump_json()), length=32
     )
     existing_manifest = session.get(ApprovedManifestRow, manifest_id)
     if existing_manifest is not None:
+        create_joint_approved_subtopics(
+            session,
+            version_id=version_id,
+            manifest_id=manifest_id,
+            source_proposal_id=proposal_id,
+            provider_id=row.provider_id,
+            model_id=row.model_id,
+            proposal=proposal,
+        )
         if joint_summary is not None:
             approve_joint_article_overview(
                 session,
@@ -598,12 +651,12 @@ def approve_manifest(session: Session, manifest_path: Path) -> str:
         proposal_id=proposal_id,
         version_id=version_id,
         manifest_version=1,
-        topics_json=proposal.model_dump_json(),
+        topics_json=core_proposal.model_dump_json(),
     )
     session.add(manifest)
     session.flush()
     by_number = {item.number: item for item in paragraphs}
-    for topic in proposal.topics:
+    for topic in core_proposal.topics:
         if not topic.include_in_index:
             continue
         original_text = "\n\n".join(
@@ -634,6 +687,15 @@ def approve_manifest(session: Session, manifest_path: Path) -> str:
         )
     row.status = ProposalStatus.APPROVED.value
     version.status = VersionStatus.APPROVED.value
+    create_joint_approved_subtopics(
+        session,
+        version_id=version_id,
+        manifest_id=manifest_id,
+        source_proposal_id=proposal_id,
+        provider_id=row.provider_id,
+        model_id=row.model_id,
+        proposal=proposal,
+    )
     if joint_summary is not None:
         approve_joint_article_overview(
             session,

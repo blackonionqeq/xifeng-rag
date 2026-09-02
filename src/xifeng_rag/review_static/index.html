@@ -72,11 +72,32 @@
       <label>标题<input class="topic-title" maxlength="200" required></label>
       <label>概括<textarea class="topic-summary" maxlength="2000" rows="3" required></textarea></label>
       <label>关键词<input class="topic-keywords" required></label>
+      <section class="subtopics-section">
+        <div class="subtopics-heading">
+          <div>
+            <strong>细话题（可选）</strong>
+            <p>用于文章反查，不要求覆盖此块。</p>
+          </div>
+          <button class="add-subtopic secondary" type="button">添加细话题</button>
+        </div>
+        <div class="subtopics"></div>
+      </section>
       <label class="index-toggle"><input class="topic-index" type="checkbox">进入索引</label>
       <div class="topic-buttons">
         <button class="locate-button secondary" type="button">定位此块</button>
         <button class="merge-button secondary" type="button">与上一块合并</button>
       </div>
+    </article>
+  </template>
+  <template id="subtopic-template">
+    <article class="subtopic-row">
+      <div class="subtopic-range-fields">
+        <label>细话题<input class="subtopic-title" maxlength="200" required></label>
+        <label>起始单元<input class="subtopic-start" type="number" min="1" required></label>
+        <label>结束单元<input class="subtopic-end" type="number" min="1" required></label>
+      </div>
+      <label>内容要点<textarea class="subtopic-summary" maxlength="1000" rows="2" required></textarea></label>
+      <button class="remove-subtopic quiet" type="button">删除</button>
     </article>
   </template>
   <script src="/static/app.js" defer></script>

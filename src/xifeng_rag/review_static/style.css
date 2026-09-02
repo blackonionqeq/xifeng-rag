@@ -111,6 +111,15 @@ textarea { resize: vertical; }
 .secondary { margin-top: .8rem; padding: .45rem .7rem; color: #69462d; background: #eee5da; }
 .secondary:hover { background: #e2d5c5; }
 .topic-buttons { display: flex; gap: .55rem; }
+.subtopics-section { margin-top: .8rem; padding-top: .7rem; border-top: 1px solid #ece8df; }
+.subtopics-heading { display: flex; justify-content: space-between; gap: .6rem; align-items: start; }
+.subtopics-heading p { margin: .2rem 0 0; color: #747a75; font-size: .75rem; }
+.subtopics-heading .secondary { margin-top: 0; white-space: nowrap; }
+.subtopic-row { margin-top: .65rem; padding: .65rem; border: 1px solid #e4dfd5; border-radius: .45rem; background: #fbfaf7; }
+.subtopic-range-fields { display: grid; grid-template-columns: minmax(0, 1fr) 5.5rem 5.5rem; gap: .45rem; }
+.subtopic-row label { margin-top: 0; }
+.subtopic-row > label { margin-top: .45rem; }
+.subtopic-row .quiet { margin-top: .45rem; padding: .35rem .55rem; color: #7a3f35; background: #f2dfdc; }
 .locate-button[aria-pressed="true"] { color: white; background: #9b641f; }
 .completion-panel {
   width: min(42rem, calc(100% - 2rem));

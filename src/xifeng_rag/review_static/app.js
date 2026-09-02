@@ -27,6 +27,12 @@ function syncFields() {
     topic.summary = card.querySelector(".topic-summary").value;
     topic.keywords = card.querySelector(".topic-keywords").value
       .split(/[,，]/).map((item) => item.trim()).filter(Boolean);
+    topic.subtopics = [...card.querySelectorAll(".subtopic-row")].map((row) => ({
+      title: row.querySelector(".subtopic-title").value,
+      start_unit: Number(row.querySelector(".subtopic-start").value),
+      end_unit: Number(row.querySelector(".subtopic-end").value),
+      summary: row.querySelector(".subtopic-summary").value,
+    }));
     topic.include_in_index = card.querySelector(".topic-index").checked;
   });
 }
@@ -48,9 +54,11 @@ function toggleBoundary(number) {
       title: "新话题",
       summary: "请补充概括",
       keywords: ["待补充"],
+      subtopics: [],
       include_in_index: topic.include_in_index,
     };
     topic.end_paragraph = number;
+    topic.subtopics = [];
     state.topics.splice(index + 1, 0, next);
     state.locatedTopicIndex = index;
   }
@@ -62,6 +70,7 @@ function mergeWithPrevious(index) {
   if (index <= 0) return;
   syncFields();
   state.topics[index - 1].end_paragraph = state.topics[index].end_paragraph;
+  state.topics[index - 1].subtopics = [];
   state.topics.splice(index, 1);
   state.locatedTopicIndex = index - 1;
   markDirty();
@@ -91,7 +100,7 @@ function updateActions() {
 
 function lockEditing() {
   document.querySelectorAll(
-    "#article-summary, .topic-title, .topic-summary, .topic-keywords, .topic-index, .merge-button, .boundary"
+    "#article-summary, .topic-title, .topic-summary, .topic-keywords, .topic-index, .merge-button, .boundary, .subtopic-row input, .subtopic-row textarea, .add-subtopic, .remove-subtopic"
   ).forEach((element) => { element.disabled = true; });
 }
 
@@ -163,6 +172,34 @@ function renderTopics() {
     fragment.querySelector(".topic-title").value = topic.title;
     fragment.querySelector(".topic-summary").value = topic.summary;
     fragment.querySelector(".topic-keywords").value = topic.keywords.join("，");
+    topic.subtopics ||= [];
+    const subtopics = fragment.querySelector(".subtopics");
+    const subtopicTemplate = document.getElementById("subtopic-template");
+    topic.subtopics.forEach((subtopic, subtopicIndex) => {
+      const subtopicFragment = subtopicTemplate.content.cloneNode(true);
+      subtopicFragment.querySelector(".subtopic-title").value = subtopic.title;
+      subtopicFragment.querySelector(".subtopic-start").value = String(subtopic.start_unit);
+      subtopicFragment.querySelector(".subtopic-end").value = String(subtopic.end_unit);
+      subtopicFragment.querySelector(".subtopic-summary").value = subtopic.summary;
+      subtopicFragment.querySelector(".remove-subtopic").addEventListener("click", () => {
+        syncFields();
+        state.topics[index].subtopics.splice(subtopicIndex, 1);
+        markDirty();
+        renderTopics();
+      });
+      subtopics.append(subtopicFragment);
+    });
+    fragment.querySelector(".add-subtopic").addEventListener("click", () => {
+      syncFields();
+      state.topics[index].subtopics.push({
+        title: "新细话题",
+        start_unit: topic.start_paragraph,
+        end_unit: topic.end_paragraph,
+        summary: "请补充内容要点",
+      });
+      markDirty();
+      renderTopics();
+    });
     fragment.querySelector(".topic-index").checked = topic.include_in_index;
     const locate = fragment.querySelector(".locate-button");
     locate.setAttribute("aria-pressed", String(index === state.locatedTopicIndex));

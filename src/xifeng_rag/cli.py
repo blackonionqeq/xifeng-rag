@@ -319,9 +319,7 @@ def _abort(exc: Exception) -> None:
 
 
 def _assembly_config(settings: Settings) -> ContextAssemblyConfigSnapshot:
-    return ContextAssemblyConfigSnapshot.model_validate(
-        settings.context_assembly.model_dump()
-    )
+    return ContextAssemblyConfigSnapshot.model_validate(settings.context_assembly.model_dump())
 
 
 def _search_with_profile(
@@ -569,6 +567,13 @@ def corpus_manage(
     """启动本地语料管理页面。"""
     runtime = _runtime(ctx)
     try:
+        codex_settings = runtime.settings.chunking.codex_cli
+
+        def subtopic_generator(model: str) -> CodexCliClient:
+            client = CodexCliClient(codex_settings, model)
+            client.preflight()
+            return client
+
         run_corpus_dashboard(
             runtime.database,
             runtime.settings.source_dir,
@@ -578,6 +583,8 @@ def corpus_manage(
             _hybrid_index_builder(runtime.settings),
             article_index_dir=runtime.settings.article_index_dir,
             article_index_builder=_article_index_builder(runtime.settings),
+            subtopic_generator_factory=subtopic_generator,
+            subtopic_model=codex_settings.default_model,
             open_browser=not no_open,
         )
     except Exception as exc:
@@ -911,12 +918,8 @@ def overviews_list(ctx: typer.Context) -> None:
 @overviews_app.command("revise-pending")
 def overviews_revise_pending(
     ctx: typer.Context,
-    overview_ids: Annotated[
-        list[str] | None, typer.Argument(help="可选的待审概括 ID 列表")
-    ] = None,
-    provider: Annotated[
-        str, typer.Option(help="显式使用的外部结构化生成 profile")
-    ] = "deepseek",
+    overview_ids: Annotated[list[str] | None, typer.Argument(help="可选的待审概括 ID 列表")] = None,
+    provider: Annotated[str, typer.Option(help="显式使用的外部结构化生成 profile")] = "deepseek",
     model: Annotated[str | None, typer.Option(help="覆盖 profile 默认模型")] = None,
 ) -> None:
     """用外部模型精简待审概括；只发送标题和批准分块元数据，不发送正文。"""
@@ -935,9 +938,7 @@ def overviews_revise_pending(
             )
             if overview_ids:
                 statement = statement.where(ArticleOverviewRow.id.in_(overview_ids))
-            rows = list(
-                session.scalars(statement.order_by(ArticleOverviewRow.created_at)).all()
-            )
+            rows = list(session.scalars(statement.order_by(ArticleOverviewRow.created_at)).all())
             pending_ids = [row.id for row in rows]
         if not pending_ids:
             raise ValueError("没有符合条件的待审文章概括")
@@ -959,17 +960,13 @@ def overviews_revise_pending(
                     )
                     version = session.get(ArticleVersionRow, replacement.version_id)
                     article = (
-                        session.get(ArticleRow, version.article_id)
-                        if version is not None
-                        else None
+                        session.get(ArticleRow, version.article_id) if version is not None else None
                     )
                     title = article.title if article is not None else replacement.version_id
                 typer.echo(f"{replacement.id}  pending_review  {title}")
             except Exception as exc:
                 failed = True
-                typer.echo(
-                    f"{overview_id}  failed  {type(exc).__name__}: {exc}", err=True
-                )
+                typer.echo(f"{overview_id}  failed  {type(exc).__name__}: {exc}", err=True)
         if failed:
             raise RuntimeError("部分待审概括精简失败；成功项已保留")
     except Exception as exc:
@@ -979,9 +976,7 @@ def overviews_revise_pending(
 @corpus_app.command("cleanup-dry-run")
 def corpus_cleanup_dry_run(
     ctx: typer.Context,
-    show_all: Annotated[
-        bool, typer.Option("--all", help="同时显示清洗判断未变化的文章")
-    ] = False,
+    show_all: Annotated[bool, typer.Option("--all", help="同时显示清洗判断未变化的文章")] = False,
 ) -> None:
     """只读比较新清洗规则，不修改语料或业务数据。"""
     runtime = _runtime(ctx)
@@ -1364,9 +1359,7 @@ def search_command(
                 selected_mode=selected_mode,
                 provider=provider,
                 reranker=reranker,
-                rerank_candidate_k=(
-                    rerank_candidate_k or runtime.settings.reranker.candidate_k
-                ),
+                rerank_candidate_k=(rerank_candidate_k or runtime.settings.reranker.candidate_k),
                 layered=layered,
                 rewrite_result=rewrite_result,
             )
@@ -1434,9 +1427,7 @@ def ask_command(
     top_k: Annotated[int, typer.Option("--top-k", min=1, max=100)] = 5,
     mode: Annotated[RetrievalMode | None, typer.Option("--mode")] = None,
     build: Annotated[str | None, typer.Option("--build")] = None,
-    rerank: Annotated[
-        bool, typer.Option("--rerank", help="启用本地 Cross-Encoder 重排")
-    ] = False,
+    rerank: Annotated[bool, typer.Option("--rerank", help="启用本地 Cross-Encoder 重排")] = False,
     rerank_candidate_k: Annotated[
         int | None,
         typer.Option("--rerank-candidate-k", min=1, max=1000, help="覆盖重排候选深度"),
@@ -1494,9 +1485,7 @@ def ask_command(
                 selected_mode=selected_mode,
                 provider=provider,
                 reranker=reranker,
-                rerank_candidate_k=(
-                    rerank_candidate_k or runtime.settings.reranker.candidate_k
-                ),
+                rerank_candidate_k=(rerank_candidate_k or runtime.settings.reranker.candidate_k),
                 layered=layered,
                 rewrite_result=rewrite_result,
             )
@@ -1626,8 +1615,7 @@ def eval_run(
         if layered and rerank_candidate_k is not None:
             raise ValueError("--layered 的候选深度由 layered 配置控制")
         if not layered and (
-            layered_mode != LayeredRetrievalMode.PARENT_CHILD
-            or neighbor_window is not None
+            layered_mode != LayeredRetrievalMode.PARENT_CHILD or neighbor_window is not None
         ):
             raise ValueError("--layered-mode 和 --neighbor-window 只能与 --layered 一起使用")
         legacy_path = Path(evalset)
@@ -1669,12 +1657,8 @@ def eval_run(
                         rerank_candidate_k or runtime.settings.reranker.candidate_k
                     ),
                     layered=layered,
-                    layered_parent_candidate_k=(
-                        runtime.settings.layered.parent_candidate_k
-                    ),
-                    layered_child_candidate_k=(
-                        runtime.settings.layered.child_candidate_k
-                    ),
+                    layered_parent_candidate_k=(runtime.settings.layered.parent_candidate_k),
+                    layered_child_candidate_k=(runtime.settings.layered.child_candidate_k),
                     layered_candidate_limit=runtime.settings.layered.candidate_limit,
                     layered_neighbor_window=(
                         neighbor_window
@@ -1684,21 +1668,11 @@ def eval_run(
                     layered_mode=layered_mode,
                     query_rewriter=query_rewriter,
                     rewrite_max_variants=runtime.settings.query_rewrite.max_variants,
-                    rewrite_original_weight=(
-                        runtime.settings.query_rewrite.original_weight
-                    ),
-                    rewrite_total_weight=(
-                        runtime.settings.query_rewrite.rewrite_total_weight
-                    ),
-                    rewrite_fusion_rrf_k=(
-                        runtime.settings.query_rewrite.fusion_rrf_k
-                    ),
-                    rewrite_candidate_limit=(
-                        runtime.settings.query_rewrite.candidate_limit
-                    ),
-                    evidence_assessment_enabled=(
-                        runtime.settings.evidence_assessment.enabled
-                    ),
+                    rewrite_original_weight=(runtime.settings.query_rewrite.original_weight),
+                    rewrite_total_weight=(runtime.settings.query_rewrite.rewrite_total_weight),
+                    rewrite_fusion_rrf_k=(runtime.settings.query_rewrite.fusion_rrf_k),
+                    rewrite_candidate_limit=(runtime.settings.query_rewrite.candidate_limit),
+                    evidence_assessment_enabled=(runtime.settings.evidence_assessment.enabled),
                     evidence_assessment_observation_k=(
                         runtime.settings.evidence_assessment.observation_k
                     ),
@@ -1766,8 +1740,7 @@ def eval_article_discovery(
                 else "没有与当前 Build 兼容的确认题"
             )
             typer.echo(
-                f"{mode_result.mode.value}: {values}  "
-                f"不兼容={metrics.incompatible_question_count}"
+                f"{mode_result.mode.value}: {values}  不兼容={metrics.incompatible_question_count}"
             )
         typer.echo(f"结果：{output_path}")
     except Exception as exc:

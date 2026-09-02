@@ -137,6 +137,26 @@ class ArticleOverviewRow(Base):
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class SubtopicSetRow(Base):
+    __tablename__ = "subtopic_sets"
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    version_id: Mapped[str] = mapped_column(ForeignKey("article_versions.id"), index=True)
+    manifest_id: Mapped[str] = mapped_column(ForeignKey("approved_manifests.id"), index=True)
+    source_proposal_id: Mapped[str | None] = mapped_column(
+        ForeignKey("chunk_proposals.id"), nullable=True, index=True
+    )
+    status: Mapped[str] = mapped_column(String(40), index=True)
+    provider_id: Mapped[str] = mapped_column(Text)
+    model_id: Mapped[str] = mapped_column(Text)
+    prompt_version: Mapped[str] = mapped_column(String(64))
+    schema_version: Mapped[str] = mapped_column(String(64))
+    subtopics_json: Mapped[str] = mapped_column(Text, default='{"topics": []}')
+    diagnostics_json: Mapped[str] = mapped_column(Text, default="[]")
+    generation_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class IndexBuildRow(Base):
     __tablename__ = "index_builds"
     id: Mapped[str] = mapped_column(String(96), primary_key=True)
@@ -190,12 +210,8 @@ class EvaluationRunRow(Base):
     reranker_candidate_k: Mapped[int | None] = mapped_column(Integer, nullable=True)
     reranker_input_template_version: Mapped[str | None] = mapped_column(Text, nullable=True)
     reranker_load_duration_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
-    reranker_truncated_candidate_count: Mapped[int | None] = mapped_column(
-        Integer, nullable=True
-    )
-    reranker_process_memory_delta_bytes: Mapped[int | None] = mapped_column(
-        Integer, nullable=True
-    )
+    reranker_truncated_candidate_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reranker_process_memory_delta_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     reranker_cuda_peak_memory_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 

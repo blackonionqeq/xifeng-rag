@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from xifeng_rag.corpus import stable_id
 from xifeng_rag.domain import (
+    ArticleSubtopics,
     BuildStatus,
     OverviewStatus,
     RetrievalMode,
@@ -37,9 +38,10 @@ from xifeng_rag.storage import (
     ArticleOverviewRow,
     ArticleRow,
     ArticleVersionRow,
+    SubtopicSetRow,
 )
 
-ARTICLE_PROFILE_VERSION = "approved-article-overview-topics-bge-bm25-rrf-v2"
+ARTICLE_PROFILE_VERSION = "approved-article-overview-topics-subtopics-bge-bm25-rrf-v3"
 ARTICLE_COLLECTION = "article_documents"
 DOCUMENTS_FILE = "documents.json"
 
@@ -57,6 +59,7 @@ class ArticleSearchDocument:
     topic_titles: list[str]
     topic_keywords: dict[str, list[str]]
     supplemental_keywords: list[str]
+    subtopics: list[dict[str, object]]
     search_text: str
 
 
@@ -68,6 +71,7 @@ class ArticleSearchResult:
     published_at: str | None
     article_summary: str
     matched_topics: list[str]
+    matched_subtopics: list[str]
     sources: list[str]
     rrf_score: float | None
     bm25_score: float | None
@@ -131,8 +135,20 @@ def _search_text(
     article_summary: str,
     topic_titles: list[str],
     supplemental_keywords: list[str],
+    subtopics: list[dict[str, object]],
 ) -> str:
-    parts = [title, article_summary, *topic_titles, *supplemental_keywords]
+    subtopic_parts = [
+        str(value)
+        for item in subtopics
+        for value in (item.get("title", ""), item.get("summary", ""))
+    ]
+    parts = [
+        title,
+        article_summary,
+        *topic_titles,
+        *supplemental_keywords,
+        *subtopic_parts,
+    ]
     return "\n".join(item.strip() for item in parts if item.strip())
 
 
@@ -176,8 +192,36 @@ def selected_article_documents(session: Session) -> list[ArticleSearchDocument]:
         supplemental = _supplemental_keywords(
             article.title, overview.article_summary, topic_titles, keywords
         )
+        approved_subtopics = session.scalar(
+            select(SubtopicSetRow)
+            .where(
+                SubtopicSetRow.version_id == version.id,
+                SubtopicSetRow.status == "approved",
+            )
+            .order_by(SubtopicSetRow.approved_at.desc())
+        )
+        subtopics: list[dict[str, object]] = []
+        if approved_subtopics is not None:
+            parsed_subtopics = ArticleSubtopics.model_validate_json(
+                approved_subtopics.subtopics_json
+            )
+            subtopics = [
+                {
+                    "title": item.title,
+                    "summary": item.summary,
+                    "start_unit": item.start_unit,
+                    "end_unit": item.end_unit,
+                    "parent_title": parent.parent_title,
+                }
+                for parent in parsed_subtopics.topics
+                for item in parent.subtopics
+            ]
         text = _search_text(
-            article.title, overview.article_summary, topic_titles, supplemental
+            article.title,
+            overview.article_summary,
+            topic_titles,
+            supplemental,
+            subtopics,
         )
         document_id = stable_id(
             "article-document",
@@ -200,6 +244,7 @@ def selected_article_documents(session: Session) -> list[ArticleSearchDocument]:
             topic_titles=topic_titles,
             topic_keywords=topic_keywords,
             supplemental_keywords=supplemental,
+            subtopics=subtopics,
             search_text=text,
         )
     return sorted(selected.values(), key=lambda item: item.document_id)
@@ -263,9 +308,7 @@ def build_article_index(
     existing = session.get(ArticleIndexBuildRow, build_id)
     if existing is not None and final_path.is_dir():
         _activate_build(session, existing)
-        return ArticleBuildOutcome(
-            build_id, len(documents), final_path, existing.duration_ms or 0
-        )
+        return ArticleBuildOutcome(build_id, len(documents), final_path, existing.duration_ms or 0)
 
     index_root.mkdir(parents=True, exist_ok=True)
     temporary = Path(tempfile.mkdtemp(prefix=".building-", dir=index_root))
@@ -398,7 +441,13 @@ def _load_documents(path: Path) -> dict[str, ArticleSearchDocument]:
     payload = json.loads((path / DOCUMENTS_FILE).read_text(encoding="utf-8"))
     if not isinstance(payload, list):
         raise ValueError("文章索引文档清单格式错误")
-    documents = [ArticleSearchDocument(**item) for item in payload]
+    documents = []
+    for item in payload:
+        if not isinstance(item, dict):
+            raise ValueError("文章索引文档格式错误")
+        compatible = dict(item)
+        compatible.setdefault("subtopics", [])
+        documents.append(ArticleSearchDocument(**compatible))
     return {item.document_id: item for item in documents}
 
 
@@ -411,9 +460,7 @@ def _bm25_search(path: Path, query: str, limit: int) -> list[RankedHit]:
         show_progress=False,
     )
     hits: list[RankedHit] = []
-    for rank, (metadata, score) in enumerate(
-        zip(results[0], scores[0], strict=True), start=1
-    ):
+    for rank, (metadata, score) in enumerate(zip(results[0], scores[0], strict=True), start=1):
         document_id = metadata.get("document_id") if isinstance(metadata, dict) else None
         if not isinstance(document_id, str):
             raise RuntimeError("文章 BM25 结果缺少 document_id")
@@ -457,6 +504,24 @@ def _matched_topics(query: str, document: ArticleSearchDocument) -> list[str]:
         searchable = " ".join([title, *document.topic_keywords.get(title, [])])
         topic_tokens = set(tokenizer.tokenize(searchable))
         score = len(query_tokens & topic_tokens)
+        if title.casefold() in query.casefold() or query.casefold() in title.casefold():
+            score += 2
+        if score:
+            scored.append((score, title))
+    return [title for _, title in sorted(scored, key=lambda item: (-item[0], item[1]))[:3]]
+
+
+def _matched_subtopics(query: str, document: ArticleSearchDocument) -> list[str]:
+    tokenizer = ChineseTokenizer()
+    query_tokens = set(tokenizer.tokenize(query))
+    scored: list[tuple[int, str]] = []
+    for item in document.subtopics:
+        title = str(item.get("title", "")).strip()
+        summary = str(item.get("summary", "")).strip()
+        if not title:
+            continue
+        tokens = set(tokenizer.tokenize(f"{title} {summary}"))
+        score = len(query_tokens & tokens)
         if title.casefold() in query.casefold() or query.casefold() in title.casefold():
             score += 2
         if score:
@@ -517,10 +582,7 @@ def search_articles(
         and embedding_provider is not None
         else []
     )
-    if (
-        selected_mode in {RetrievalMode.DENSE, RetrievalMode.HYBRID}
-        and embedding_provider is None
-    ):
+    if selected_mode in {RetrievalMode.DENSE, RetrievalMode.HYBRID} and embedding_provider is None:
         raise ValueError("Dense 或 Hybrid 文章检索需要 Embedding provider")
     if selected_mode == RetrievalMode.BM25:
         fused = [(hit.chunk_id, None, hit, None) for hit in bm25_hits]
@@ -549,6 +611,7 @@ def search_articles(
                 published_at=document.published_at,
                 article_summary=document.article_summary,
                 matched_topics=_matched_topics(query, document),
+                matched_subtopics=_matched_subtopics(query, document),
                 sources=sources,
                 rrf_score=rrf_score,
                 bm25_score=bm25.score if bm25 is not None else None,

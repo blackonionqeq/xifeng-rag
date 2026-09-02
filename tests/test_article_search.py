@@ -18,7 +18,7 @@ from xifeng_rag.article_search import (
     selected_article_documents,
 )
 from xifeng_rag.cli import app
-from xifeng_rag.domain import OverviewStatus, RetrievalMode, VersionStatus
+from xifeng_rag.domain import OverviewStatus, RetrievalMode, SubtopicSetStatus, VersionStatus
 from xifeng_rag.storage import (
     ApprovedManifestRow,
     ArticleIndexBuildRow,
@@ -27,6 +27,7 @@ from xifeng_rag.storage import (
     ArticleVersionRow,
     ChunkProposalRow,
     Database,
+    SubtopicSetRow,
 )
 
 
@@ -185,6 +186,80 @@ def test_article_document_is_concise_and_requires_approved_overview(
     assert "社会阶段" not in stage.supplemental_keywords
     assert "阶层" in stage.supplemental_keywords
     assert "组织变迁" in stage.supplemental_keywords
+
+
+def test_only_approved_subtopics_extend_article_search_document(database: Database) -> None:
+    _article_fixture(database)
+    approved = {
+        "topics": [
+            {
+                "parent_start_unit": 1,
+                "parent_end_unit": 1,
+                "parent_title": "生产组织的变化",
+                "subtopics": [
+                    {
+                        "title": "参考系落差",
+                        "start_unit": 1,
+                        "end_unit": 1,
+                        "summary": "比较不同阶段时，参照对象变化会制造价值判断落差。",
+                    }
+                ],
+            }
+        ]
+    }
+    pending = {
+        "topics": [
+            {
+                "parent_start_unit": 1,
+                "parent_end_unit": 1,
+                "parent_title": "生产组织的变化",
+                "subtopics": [
+                    {
+                        "title": "尚未批准案例",
+                        "start_unit": 1,
+                        "end_unit": 1,
+                        "summary": "这条草案不能进入索引。",
+                    }
+                ],
+            }
+        ]
+    }
+    with database.session() as session:
+        session.add_all(
+            [
+                SubtopicSetRow(
+                    id="subtopics-approved",
+                    version_id="version-1",
+                    manifest_id="manifest-1",
+                    status=SubtopicSetStatus.APPROVED.value,
+                    provider_id="test",
+                    model_id="test",
+                    prompt_version="test",
+                    schema_version="test",
+                    subtopics_json=json.dumps(approved, ensure_ascii=False),
+                ),
+                SubtopicSetRow(
+                    id="subtopics-pending",
+                    version_id="version-1",
+                    manifest_id="manifest-1",
+                    status=SubtopicSetStatus.PENDING_REVIEW.value,
+                    provider_id="test",
+                    model_id="test",
+                    prompt_version="test",
+                    schema_version="test",
+                    subtopics_json=json.dumps(pending, ensure_ascii=False),
+                ),
+            ]
+        )
+
+    with database.session() as session:
+        document = next(
+            item for item in selected_article_documents(session) if item.article_id == "article-1"
+        )
+    assert "参考系落差" in document.search_text
+    assert "参照对象变化" in document.search_text
+    assert "尚未批准案例" not in document.search_text
+    assert document.subtopics[0]["title"] == "参考系落差"
 
 
 def test_two_article_discovery_queries_rank_expected_article_first(
@@ -361,9 +436,7 @@ def test_article_discovery_cli_uses_default_dataset_and_persists_result(
     )
     monkeypatch.setattr("xifeng_rag.cli._embedding_provider", lambda settings: provider)
 
-    result = CliRunner().invoke(
-        app, ["--config", str(config), "eval", "article-discovery"]
-    )
+    result = CliRunner().invoke(app, ["--config", str(config), "eval", "article-discovery"])
 
     assert result.exit_code == 0, result.output
     assert "bm25:" in result.output

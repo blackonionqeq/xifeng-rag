@@ -30,6 +30,7 @@ from xifeng_rag.storage import (
     ChunkProposalRow,
     Database,
     ParagraphRow,
+    SubtopicSetRow,
     TopicChunkRow,
 )
 
@@ -83,10 +84,65 @@ def _valid_response() -> str:
                     "summary": "后续内容",
                     "keywords": ["后续"],
                 },
-            ]
+            ],
         },
         ensure_ascii=False,
     )
+
+
+def test_joint_generation_approves_optional_subtopics_separately(
+    database: Database, tmp_path: Path
+) -> None:
+    detached = _pending_version(database, tmp_path)
+    response = json.dumps(
+        {
+            "article_summary": "文章整体概括。",
+            "topics": [
+                {
+                    "end_unit": 5,
+                    "title": "完整论述",
+                    "summary": "全文概括",
+                    "keywords": ["主题"],
+                    "subtopics": [
+                        {
+                            "title": "具体案例",
+                            "start_unit": 2,
+                            "end_unit": 3,
+                            "summary": "文章中容易被单独记住的案例。",
+                        },
+                        {
+                            "title": "越界条目",
+                            "start_unit": 4,
+                            "end_unit": 6,
+                            "summary": "该条目应被宽松丢弃。",
+                        },
+                    ],
+                }
+            ],
+        },
+        ensure_ascii=False,
+    )
+    with database.session() as session:
+        version = session.get(ArticleVersionRow, detached.id)
+        assert version is not None
+        outcome = propose_chunks(session, version, FakeGenerator([response]), "fake-model", 0)
+        proposal = session.get(ChunkProposalRow, outcome.proposal_id)
+        assert proposal is not None
+        parsed = TopicProposal.model_validate_json(proposal.topics_json)
+        assert [item.title for item in parsed.topics[0].subtopics] == ["具体案例"]
+        diagnostics = json.loads(proposal.diagnostics_json)
+        assert diagnostics[-1]["type"] == "invalid_subtopic_range"
+        review, _ = export_review(session, detached.id, tmp_path / "reviews", outcome.proposal_id)
+        manifest_id = approve_manifest(session, review)
+        manifest = session.get(ApprovedManifestRow, manifest_id)
+        assert manifest is not None and manifest.topics_json is not None
+        approved_topics = TopicProposal.model_validate_json(manifest.topics_json)
+        assert approved_topics.topics[0].subtopics == []
+        supplement = session.scalar(
+            select(SubtopicSetRow).where(SubtopicSetRow.manifest_id == manifest_id)
+        )
+        assert supplement is not None
+        assert "具体案例" in supplement.subtopics_json
 
 
 def test_ollama_schema_uses_supported_conservative_subset() -> None:
@@ -115,7 +171,7 @@ def test_semantic_prompt_allows_one_topic_without_size_warnings(
                     "summary": "全文围绕同一主题展开",
                     "keywords": ["主题"],
                 }
-            ]
+            ],
         },
         ensure_ascii=False,
     )
@@ -150,9 +206,7 @@ def test_semantic_prompt_allows_one_topic_without_size_warnings(
         normalized = TopicProposal.model_validate_json(row.topics_json)
         assert proposal_warnings(normalized, paragraphs) == []
         overview = session.scalar(
-            select(ArticleOverviewRow).where(
-                ArticleOverviewRow.proposal_id == outcome.proposal_id
-            )
+            select(ArticleOverviewRow).where(ArticleOverviewRow.proposal_id == outcome.proposal_id)
         )
         assert overview is not None
         assert overview.article_summary == "全文围绕同一主题完整展开。"
@@ -278,7 +332,7 @@ def test_invalid_coverage_retries_then_fails(database: Database, tmp_path: Path)
                     "keywords": ["错误"],
                     "content_role": "substantive",
                 }
-            ]
+            ],
         }
     )
     fake = FakeGenerator([invalid, invalid])
@@ -312,9 +366,7 @@ def test_missing_joint_overview_retries_and_uses_valid_summary(
         assert fake.calls == 2
         assert "补齐所有字段" in fake.prompts[1]
         overview = session.scalar(
-            select(ArticleOverviewRow).where(
-                ArticleOverviewRow.proposal_id == outcome.proposal_id
-            )
+            select(ArticleOverviewRow).where(ArticleOverviewRow.proposal_id == outcome.proposal_id)
         )
         assert overview is not None
         assert overview.article_summary == "全文先说明起始内容，再讨论后续解释与结论。"
@@ -383,7 +435,7 @@ def test_generated_content_roles_are_ignored_and_topics_default_to_included(
                     "content_role": "boilerplate",
                 }
                 for index, end_unit in enumerate([1, 2, 3, 5], start=1)
-            ]
+            ],
         },
         ensure_ascii=False,
     )
@@ -415,7 +467,7 @@ def test_pending_review_version_can_add_current_prompt_proposal_without_overwrit
                     "summary": "旧版本提示词生成的提案",
                     "keywords": ["旧提案"],
                 }
-            ]
+            ],
         },
         ensure_ascii=False,
     )
@@ -673,7 +725,7 @@ def test_end_units_are_normalized_to_continuous_ranges(database: Database, tmp_p
                     "keywords": ["后续"],
                     "content_role": "substantive",
                 },
-            ]
+            ],
         },
         ensure_ascii=False,
     )
@@ -777,7 +829,7 @@ def test_excluded_topic_is_audited_but_not_materialized_as_topic_chunk(
                     "summary": "固定提示",
                     "keywords": ["提示"],
                 },
-            ]
+            ],
         },
         ensure_ascii=False,
     )
