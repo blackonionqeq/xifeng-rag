@@ -69,7 +69,10 @@ Contextual Retrieval，以及本地/外部 Generator 对比。HyDE、RAPTOR、�
 3. 在同一冻结快照上评估检索、引用、答案要点覆盖、忠实度、正确拒答、过度拒答、延迟和
    失败类型，形成端到端基线。
 4. 基于扩大后的 dev 集验证证据观测信号；需要补检索时优先研究 TopicChunk 与分层结果的
-   比较或合并，不用单一绝对阈值直接替换结果。
+   比较或合并，不用单一绝对阈值直接替换结果。正向证据检索的细话题召回通道
+   （`eval run --subtopics`）已在 pilot 6 题上实验并得到负结果（提名父块结构整体退化，
+   不默认启用），设计见[正查细话题召回通道设计](../specs/2026-09-03-subtopic-recall-channel-design.md)；
+   复验或改结构须在扩大的 dev 集上进行。
 5. 随语料规模扩大，实现向量与 BM25 派生产物的逐文章增量构建和原子切换。
 6. 验证跨文章主题综合与时间变化，再建设 FastAPI 和正式 Svelte 研究界面。
 7. 在正式 dev 集上按单变量原则比较 contextual text、Embedding、Reranker、切块和预算；

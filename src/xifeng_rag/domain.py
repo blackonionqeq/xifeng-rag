@@ -210,6 +210,10 @@ class RetrievalScores(BaseModel):
     reranker_truncated: bool | None = None
     query_fusion: float | None = None
     query_fusion_rank: int | None = Field(default=None, ge=1)
+    subtopic_bm25: float | None = None
+    subtopic_bm25_rank: int | None = Field(default=None, ge=1)
+    subtopic_dense: float | None = None
+    subtopic_dense_rank: int | None = Field(default=None, ge=1)
 
 
 class QueryMatch(BaseModel):

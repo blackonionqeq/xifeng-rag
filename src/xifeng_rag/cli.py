@@ -1704,6 +1704,18 @@ def eval_run(
         int | None,
         typer.Option("--neighbor-window", min=0, max=10, help="覆盖分层相邻子块数量"),
     ] = None,
+    subtopics: Annotated[
+        bool,
+        typer.Option("--subtopics", help="叠加细话题召回通道（需分层套件）"),
+    ] = False,
+    subtopic_suite: Annotated[
+        str | None,
+        typer.Option("--subtopic-suite", help="分层套件清单路径（默认 latest）"),
+    ] = None,
+    subtopic_candidate_k: Annotated[
+        int | None,
+        typer.Option("--subtopic-candidate-k", min=1, max=200, help="细话题通道候选深度"),
+    ] = None,
 ) -> None:
     """运行冻结检索评测集。"""
     runtime = _runtime(ctx)
@@ -1723,6 +1735,20 @@ def eval_run(
             layered_mode != LayeredRetrievalMode.PARENT_CHILD or neighbor_window is not None
         ):
             raise ValueError("--layered-mode 和 --neighbor-window 只能与 --layered 一起使用")
+        if subtopics and not rerank:
+            raise ValueError("--subtopics 必须同时启用 --rerank")
+        if subtopics and build is None:
+            raise ValueError("--subtopics 必须同时用 --build 指定冻结 Build")
+        if subtopics and layered:
+            raise ValueError("--subtopics 不能与 --layered 同时使用")
+        if subtopics and rewrite:
+            raise ValueError("--subtopics 第一版不能与 --rewrite 同时使用")
+        if not subtopics and (
+            subtopic_suite is not None or subtopic_candidate_k is not None
+        ):
+            raise ValueError(
+                "--subtopic-suite 和 --subtopic-candidate-k 只能与 --subtopics 一起使用"
+            )
         legacy_path = Path(evalset)
         selected_mode = (
             RetrievalMode.BM25
@@ -1771,6 +1797,18 @@ def eval_run(
                         else runtime.settings.layered.neighbor_window
                     ),
                     layered_mode=layered_mode,
+                    subtopics=subtopics,
+                    subtopic_suite=(
+                        (
+                            Path(subtopic_suite).resolve()
+                            if subtopic_suite is not None
+                            else runtime.settings.article_index_dir / LATEST_SUITE_FILE
+                        )
+                        if subtopics
+                        else None
+                    ),
+                    subtopic_candidate_k=(subtopic_candidate_k or 10),
+                    subtopic_weight=1.0,
                     query_rewriter=query_rewriter,
                     rewrite_max_variants=runtime.settings.query_rewrite.max_variants,
                     rewrite_original_weight=(runtime.settings.query_rewrite.original_weight),

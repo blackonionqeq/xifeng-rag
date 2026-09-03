@@ -914,6 +914,13 @@ class FusedHit:
     dense: RankedHit | None
 
 
+@dataclass(frozen=True)
+class MultiFusedHit:
+    chunk_id: str
+    rrf_score: float
+    channels: dict[str, RankedHit]
+
+
 @dataclass
 class _ExpansionGroup:
     parent_id: str
@@ -947,6 +954,52 @@ def reciprocal_rank_fusion(
             min(
                 item.bm25.rank if item.bm25 is not None else 10**9,
                 item.dense.rank if item.dense is not None else 10**9,
+            ),
+            item.chunk_id,
+        ),
+    )
+
+
+def weighted_reciprocal_rank_fusion(
+    channel_hits: dict[str, tuple[list[RankedHit], float]],
+    rrf_k: int = 60,
+) -> list[MultiFusedHit]:
+    """N 通道加权 RRF：rrf = Σ weight_channel / (rrf_k + rank_channel)。
+
+    等权双通道（bm25、dense）时排序结果与 reciprocal_rank_fusion 一致。
+    """
+    if rrf_k <= 0:
+        raise ValueError("rrf_k 必须大于 0")
+    for channel, (hits, weight) in channel_hits.items():
+        if weight <= 0:
+            raise ValueError(f"通道权重必须大于 0：{channel}")
+        seen: set[str] = set()
+        for hit in hits:
+            if hit.chunk_id in seen:
+                raise ValueError(f"通道 {channel} 内存在重复候选：{hit.chunk_id}")
+            seen.add(hit.chunk_id)
+    by_id: dict[str, dict[str, RankedHit]] = {}
+    for channel, (hits, _weight) in channel_hits.items():
+        for hit in hits:
+            by_id.setdefault(hit.chunk_id, {})[channel] = hit
+    fused = [
+        MultiFusedHit(
+            chunk_id=chunk_id,
+            rrf_score=sum(
+                channel_hits[channel][1] / (rrf_k + hit.rank)
+                for channel, hit in sources.items()
+            ),
+            channels=sources,
+        )
+        for chunk_id, sources in by_id.items()
+    ]
+    return sorted(
+        fused,
+        key=lambda item: (
+            -item.rrf_score,
+            min(
+                (hit.rank for hit in item.channels.values()),
+                default=10**9,
             ),
             item.chunk_id,
         ),

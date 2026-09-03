@@ -42,6 +42,13 @@ from xifeng_rag.storage import (
     IndexBuildRow,
     TopicChunkRow,
 )
+from xifeng_rag.subtopic_recall import (
+    SubtopicQueryAudit,
+    SubtopicRecallContext,
+    build_subtopic_context,
+    read_build_universe,
+    search_with_subtopic_candidates,
+)
 
 
 class EvaluationQuestion(BaseModel):
@@ -159,6 +166,10 @@ def run_frozen_evaluation(
     rewrite_total_weight: float = 0.7,
     rewrite_fusion_rrf_k: int = 60,
     rewrite_candidate_limit: int = 128,
+    subtopics: bool = False,
+    subtopic_suite: Path | None = None,
+    subtopic_candidate_k: int = 10,
+    subtopic_weight: float = 1.0,
     evidence_assessment_enabled: bool = False,
     evidence_assessment_observation_k: int = 5,
 ) -> dict[str, object]:
@@ -198,6 +209,30 @@ def run_frozen_evaluation(
         or reranker is None
     ):
         raise ValueError("查询改写评测需要 Hybrid、Embedding Provider 和 Reranker")
+    subtopic_context: SubtopicRecallContext | None = None
+    if subtopics:
+        if layered or query_rewriter is not None:
+            raise ValueError("细话题召回评测第一版不能与分层检索或查询改写同时使用")
+        if (
+            RetrievalMode(mode) != RetrievalMode.HYBRID
+            or embedding_provider is None
+            or reranker is None
+            or build_id is None
+        ):
+            raise ValueError("细话题召回评测需要显式 Build、Hybrid 和 Reranker")
+        if subtopic_candidate_k <= 0:
+            raise ValueError("subtopic_candidate_k 必须大于 0")
+        if subtopic_weight <= 0:
+            raise ValueError("subtopic_weight 必须大于 0")
+        if subtopic_suite is None:
+            raise ValueError("细话题召回评测需要 --subtopic-suite 指定分层套件")
+        universe = read_build_universe(Path(build.path))
+        subtopic_context = build_subtopic_context(
+            session,
+            suite_path=subtopic_suite,
+            universe_chunk_ids=universe,
+            embedding_metadata=embedding_provider.metadata,
+        )
     details: list[dict[str, object]] = []
     assessments: list[EvidenceAssessment] = []
     for question in questions:
@@ -229,6 +264,7 @@ def run_frozen_evaluation(
             )
         }
         started = time.perf_counter()
+        subtopic_audit: SubtopicQueryAudit | None = None
         rewrite_result = (
             query_rewriter.rewrite(question.query, rewrite_max_variants)
             if query_rewriter is not None
@@ -278,6 +314,27 @@ def run_frozen_evaluation(
                 rrf_k=rrf_k,
                 neighbor_window=layered_neighbor_window,
                 layer_mode=layered_mode,
+            )
+        elif subtopics:
+            assert (
+                subtopic_context is not None
+                and embedding_provider is not None
+                and reranker is not None
+            )
+            candidates, subtopic_audit = search_with_subtopic_candidates(
+                session,
+                question.query,
+                k,
+                embedding_provider=embedding_provider,
+                bm25_candidate_k=bm25_candidate_k,
+                dense_candidate_k=dense_candidate_k,
+                rrf_k=rrf_k,
+                reranker=reranker,
+                rerank_candidate_k=rerank_candidate_k,
+                context=subtopic_context,
+                build_path=Path(build.path),
+                subtopic_candidate_k=subtopic_candidate_k,
+                subtopic_weight=subtopic_weight,
             )
         elif query_variants is not None:
             assert embedding_provider is not None and reranker is not None
@@ -423,6 +480,17 @@ def run_frozen_evaluation(
                     if layered
                     else None
                 ),
+                "subtopic_recall": (
+                    {
+                        "nominated_chunk_ids": list(subtopic_audit.nominated_chunk_ids),
+                        "nominated_subtopic_titles": list(
+                            subtopic_audit.nominated_subtopic_titles
+                        ),
+                        "dropped_hit_count": subtopic_audit.dropped_hit_count,
+                    }
+                    if subtopic_audit is not None
+                    else None
+                ),
             }
         if assessment is not None:
             question_detail["evidence_assessment"] = assessment.model_dump(mode="json")
@@ -538,6 +606,22 @@ def run_frozen_evaluation(
                 "layer_mode": str(LayeredRetrievalMode(layered_mode)),
             }
             if layered
+            else None
+        ),
+        "subtopics": (
+            {
+                "build_id": subtopic_context.build_id,
+                "corpus_snapshot": subtopic_context.corpus_snapshot,
+                "suite_unit_count": subtopic_context.chunk_map.suite_unit_count,
+                "mapped_unit_count": subtopic_context.chunk_map.mapped_unit_count,
+                "dropped_unit_count": subtopic_context.chunk_map.dropped_unit_count,
+                "covered_chunk_count": len(subtopic_context.chunk_map.covered_chunk_ids),
+                "covered_article_count": subtopic_context.chunk_map.covered_article_count,
+                "candidate_k": subtopic_candidate_k,
+                "weight": subtopic_weight,
+                "rrf_k": rrf_k,
+            }
+            if subtopic_context is not None
             else None
         ),
         "metrics": metrics,
