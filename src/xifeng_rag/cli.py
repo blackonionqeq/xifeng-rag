@@ -1841,7 +1841,7 @@ def eval_article_discovery(
     build: Annotated[str | None, typer.Option("--build", help="指定文章级 Index Build")] = None,
     as_json: Annotated[bool, typer.Option("--json", help="输出完整结构化运行结果")] = False,
 ) -> None:
-    """在人工确认题上比较文章级 BM25、Dense 与 Hybrid。"""
+    """评测旧累计文章文档基线的 BM25、Dense 与 Hybrid。"""
     runtime = _runtime(ctx)
     provider = None
     try:
@@ -1988,7 +1988,7 @@ def eval_layered_article_discovery(
     ] = 20,
     as_json: Annotated[bool, typer.Option("--json", help="输出完整结构化运行结果")] = False,
 ) -> None:
-    """在四个隔离层上运行 BM25、Dense 与多单元聚合实验。"""
+    """评测分层文章反查主链的四层 BM25、Dense 与多单元聚合。"""
     runtime = _runtime(ctx)
     provider = None
     try:

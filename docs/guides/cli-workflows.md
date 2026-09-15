@@ -50,6 +50,18 @@ uv run xifeng chunks retry <ARTICLE_ID> --provider codex-cli --model <MODEL_ID>
 
 ## 既有文章概括与文章反查
 
+### 反查评测命令选择
+
+文章反查与正查证据评测使用不同题集和指标；不要用 `eval run` 评估“记得主题、忘了文章”的场景。根据评测目的选择命令：
+
+| 目的 | 命令 | 覆盖范围 |
+| --- | --- | --- |
+| 复现旧累计文章文档基线 | `uv run xifeng eval article-discovery` | 单篇累计文档上的 BM25、Dense、Hybrid |
+| 比较分层文章反查通道 | `uv run xifeng eval layered-article-discovery --candidate-k 20` | 概括、关键词、细话题、原文层的 BM25、Dense 与单元聚合 |
+| 重放分层降级策略 | `uv run xifeng eval simulate-article-fallback <LAYERED_RESULT_JSON>` | 已保存分层结果上的候选降级与融合策略 |
+
+`eval article-discovery` 是兼容旧行为的累计文档基线；分层文章反查的主评测使用 `eval layered-article-discovery`。后者要求 `--candidate-k` 与已构建的分层索引 Profile 一致。
+
 新文章的整体概括随分块提案共同生成。以下命令只用于给既有完整批准清单补概括：
 
 ```powershell
