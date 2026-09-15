@@ -3,6 +3,7 @@
 const token = new URLSearchParams(window.location.search).get("token") || "";
 const state = { articles: [], stats: null, busy: false };
 let pendingSubtopicReview = null;
+let pendingChunkRetry = null;
 const statusLabels = {
   discovered: "已发现",
   needs_cleanup_review: "待清洗审核",
@@ -224,6 +225,14 @@ async function openOriginalViewer(article, button) {
 function reviewAction(article) {
   const wrapper = document.createElement("div");
   wrapper.className = "review-action";
+  if (article.can_retry_chunks) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "small";
+    button.textContent = "AI 分块";
+    button.addEventListener("click", () => prepareChunkRetry(article, button));
+    wrapper.append(button);
+  }
   if (article.pending_proposals.length) {
     const group = document.createElement("div");
     const select = document.createElement("select");
@@ -318,13 +327,14 @@ function finishSubtopicDialog(message) {
   if (message) document.getElementById("operation-status").textContent = message;
 }
 
-function renderProgressTab(tab, articleTitle, message, isError = false) {
+function renderProgressTab(tab, articleTitle, message, isError = false, taskName = "细话题") {
   const document = tab.document;
-  document.title = isError ? "细话题生成失败" : "正在生成细话题";
+  const progressTitle = taskName === "细话题" ? "正在生成细话题" : `正在生成${taskName}`;
+  document.title = isError ? `${taskName}生成失败` : progressTitle;
   const main = document.createElement("main");
   main.style.cssText = "max-width:42rem;margin:12vh auto;padding:2rem;font:16px/1.7 'Segoe UI','Microsoft YaHei',sans-serif;color:#202522";
   const heading = document.createElement("h1");
-  heading.textContent = isError ? "细话题生成失败" : "正在生成细话题…";
+  heading.textContent = isError ? `${taskName}生成失败` : `正在生成${taskName}…`;
   const article = document.createElement("p");
   article.textContent = articleTitle;
   article.style.fontWeight = "650";
@@ -333,6 +343,92 @@ function renderProgressTab(tab, articleTitle, message, isError = false) {
   detail.style.color = isError ? "#843f3a" : "#59615c";
   main.append(heading, article, detail);
   document.body.replaceChildren(main);
+}
+
+function chunkRetryDisclosureText(disclosure) {
+  return [
+    `文章：${disclosure.article_title}`,
+    `版本：${disclosure.version_id}`,
+    `清洗后正文：${disclosure.character_count} 字符，${disclosure.unit_count} 个原子单元`,
+    "外部服务：OpenAI Codex CLI（复用当前 ChatGPT 登录）",
+    `模型：${disclosure.model}`,
+    `本次最多发送 ${disclosure.max_requests} 次完整清洗后正文。`,
+    "训练使用取决于当前 ChatGPT 账户的数据控制设置。",
+  ].join("\n");
+}
+
+function finishChunkRetryDialog(message) {
+  const pending = pendingChunkRetry;
+  pendingChunkRetry = null;
+  document.getElementById("chunk-retry-dialog").close();
+  if (pending) pending.button.disabled = false;
+  if (message) document.getElementById("operation-status").textContent = message;
+}
+
+async function prepareChunkRetry(article, button) {
+  const status = document.getElementById("operation-status");
+  button.disabled = true;
+  status.textContent = `正在读取外发范围：${article.title}`;
+  try {
+    const response = await request("/api/chunk-retries/disclosure", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ article_id: article.article_id }),
+    });
+    const disclosure = await response.json();
+    if (!response.ok) throw new Error(disclosure.error || "无法读取 AI 分块外发范围");
+    pendingChunkRetry = { article, button, disclosure };
+    document.getElementById("chunk-retry-disclosure").textContent =
+      chunkRetryDisclosureText(disclosure);
+    document.getElementById("chunk-retry-dialog").showModal();
+    status.textContent = "请核对 AI 分块外发范围并确认。";
+  } catch (error) {
+    button.disabled = false;
+    status.textContent = error.message;
+  }
+}
+
+async function confirmChunkRetry() {
+  const pending = pendingChunkRetry;
+  if (!pending) return;
+  const { article, button, disclosure } = pending;
+  const status = document.getElementById("operation-status");
+  const tab = window.open("about:blank", "_blank");
+  if (!tab) {
+    status.textContent = "浏览器阻止了新标签页，请允许弹窗后重试";
+    return;
+  }
+  pendingChunkRetry = null;
+  document.getElementById("chunk-retry-dialog").close();
+  renderProgressTab(
+    tab,
+    article.title,
+    "Codex 正在分析这篇文章。长文可能需要几分钟，请不要关闭此标签页。",
+    false,
+    "AI 分块",
+  );
+  status.textContent = "正在调用 Codex 生成分块提案…";
+  try {
+    const response = await request("/api/chunk-retries/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        article_id: article.article_id,
+        version_id: disclosure.version_id,
+        confirmed: true,
+      }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "AI 分块失败");
+    tab.location = payload.url;
+    status.textContent = `${payload.message}：${article.title}`;
+    await loadArticles();
+  } catch (error) {
+    renderProgressTab(tab, article.title, error.message, true, "AI 分块");
+    status.textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
 }
 
 async function prepareSubtopicReview(article, button) {
@@ -403,6 +499,14 @@ document.getElementById("subtopic-confirm").addEventListener("click", confirmSub
 document.getElementById("subtopic-dialog").addEventListener("cancel", (event) => {
   event.preventDefault();
   finishSubtopicDialog("已取消，未发送正文。");
+});
+document.getElementById("chunk-retry-cancel").addEventListener("click", () => {
+  finishChunkRetryDialog("已取消，未发送正文，也未创建提案。");
+});
+document.getElementById("chunk-retry-confirm").addEventListener("click", confirmChunkRetry);
+document.getElementById("chunk-retry-dialog").addEventListener("cancel", (event) => {
+  event.preventDefault();
+  finishChunkRetryDialog("已取消，未发送正文，也未创建提案。");
 });
 document.getElementById("chunk-dialog-close").addEventListener("click", () => {
   document.getElementById("chunk-dialog").close();

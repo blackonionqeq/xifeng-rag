@@ -46,6 +46,10 @@ uv run xifeng chunks retry <ARTICLE_ID> --provider <PROFILE> --model <MODEL_ID> 
 uv run xifeng chunks retry <ARTICLE_ID> --provider codex-cli --model <MODEL_ID>
 ```
 
+也可以在 `uv run xifeng corpus manage` 的语料管理页中，对待分块或待审核文章点击“AI 分块”。
+页面固定执行 `codex-cli + gpt-5.6-terra`，展示单篇完整正文的外发范围并逐次确认，成功后直接
+打开新生成提案的分块审核页。需要更换 provider、模型或使用自定义 Prompt 时仍使用 CLI。
+
 重试始终只处理明确指定的一篇文章。选择外部 provider 时，程序会在发送清洗后正文前显示版本、字符数、服务商、模型和最大请求数，并逐次要求确认。新结果是并列待审提案，不会自动批准；一次性 Prompt 仅影响本次重试。
 
 ## 既有文章概括与文章反查

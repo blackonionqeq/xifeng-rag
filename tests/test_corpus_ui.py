@@ -28,6 +28,7 @@ from xifeng_rag.storage import (
     SubtopicSetRow,
     TopicChunkRow,
 )
+from xifeng_rag.structured_generation import GenerationResult
 
 
 def _dashboard_fixture(database: Database, tmp_path: Path) -> tuple[Path, str, str]:
@@ -195,6 +196,7 @@ def test_dashboard_aggregates_latest_and_indexed_versions(
     }
     article = cast(list[dict[str, Any]], payload["articles"])[0]
     assert article["latest_version_id"] == latest_version_id
+    assert article["can_retry_chunks"] is True
     assert article["indexed_version_id"] == indexed_version_id
     assert article["has_pending_update"] is True
     assert article["indexed_chunk_count"] == 1
@@ -211,6 +213,136 @@ def test_dashboard_aggregates_latest_and_indexed_versions(
     assert article["published_at"] is None
     assert article["overview"] is None
     assert article["pending_proposals"][0]["proposal_id"] == "proposal_pending"
+
+
+def test_dashboard_ai_chunk_disclosure_does_not_start_codex(
+    database: Database, tmp_path: Path
+) -> None:
+    corpus, _, latest_version_id = _dashboard_fixture(database, tmp_path)
+
+    def forbidden_factory(model: str):
+        del model
+        raise AssertionError("读取外发范围时不得启动 Codex CLI")
+
+    application = CorpusDashboardApplication(
+        database,
+        corpus,
+        (),
+        tmp_path / "reviews",
+        tmp_path / "indexes",
+        chunk_retry_generator_factory=forbidden_factory,
+        chunk_retry_max_retries=1,
+    )
+
+    disclosure = application.chunk_retry_disclosure({"article_id": "sn:dashboard"})
+
+    assert disclosure == {
+        "article_id": "sn:dashboard",
+        "article_title": "自造文章",
+        "version_id": latest_version_id,
+        "character_count": len("新版本一。\n\n新版本二。"),
+        "unit_count": 2,
+        "provider": "codex-cli",
+        "model": "gpt-5.6-terra",
+        "max_requests": 2,
+    }
+    with pytest.raises(ValueError, match="明确确认"):
+        application.generate_chunk_retry(
+            {
+                "article_id": "sn:dashboard",
+                "version_id": latest_version_id,
+                "confirmed": False,
+            }
+        )
+    with pytest.raises(ValueError, match="最新版本已变化"):
+        application.generate_chunk_retry(
+            {
+                "article_id": "sn:dashboard",
+                "version_id": "stale-version",
+                "confirmed": True,
+            }
+        )
+
+
+def test_dashboard_ai_chunk_generates_parallel_proposal_and_starts_review(
+    database: Database, tmp_path: Path, monkeypatch
+) -> None:
+    corpus, _, latest_version_id = _dashboard_fixture(database, tmp_path)
+    selected_models: list[str] = []
+
+    class FakeGenerator:
+        def generate(self, prompt: str, schema: dict[str, object]) -> GenerationResult:
+            assert "新版本 1" in prompt
+            assert schema["type"] == "object"
+            return GenerationResult(
+                content=json.dumps(
+                    {
+                        "article_summary": "这是一篇只用于测试的文章概括。",
+                        "topics": [
+                            {
+                                "end_unit": 2,
+                                "title": "新版本主题",
+                                "summary": "自造分块概括",
+                                "keywords": ["自造"],
+                                "subtopics": [],
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+    def generator_factory(model: str) -> FakeGenerator:
+        selected_models.append(model)
+        return FakeGenerator()
+
+    class FakeReviewApplication:
+        def __init__(self, *args, **kwargs):
+            del args, kwargs
+
+    class FakeReviewServer:
+        def serve_forever(self):
+            return None
+
+        def shutdown(self):
+            return None
+
+        def server_close(self):
+            return None
+
+    monkeypatch.setattr("xifeng_rag.corpus_ui.ReviewApplication", FakeReviewApplication)
+    monkeypatch.setattr(
+        "xifeng_rag.corpus_ui.create_review_server",
+        lambda application: (FakeReviewServer(), "http://127.0.0.1:12345/?token=test"),
+    )
+    application = CorpusDashboardApplication(
+        database,
+        corpus,
+        (),
+        tmp_path / "reviews",
+        tmp_path / "indexes",
+        chunk_retry_generator_factory=generator_factory,
+        chunk_retry_max_retries=0,
+    )
+
+    result = application.generate_chunk_retry(
+        {
+            "article_id": "sn:dashboard",
+            "version_id": latest_version_id,
+            "confirmed": True,
+        }
+    )
+
+    assert selected_models == ["gpt-5.6-terra"]
+    assert result["url"] == "http://127.0.0.1:12345/?token=test"
+    with database.session() as session:
+        proposal = session.get(ChunkProposalRow, result["proposal_id"])
+        assert proposal is not None
+        assert proposal.provider_id == "codex-cli"
+        assert proposal.model_id == "gpt-5.6-terra"
+        assert proposal.version_id == latest_version_id
+        assert proposal.status == ProposalStatus.PENDING_REVIEW.value
+    application.shutdown_children()
 
 
 def test_dashboard_original_text_prefers_indexed_then_falls_back_to_latest(
@@ -471,6 +603,16 @@ def test_dashboard_http_requires_token_scans_and_shuts_down(
     thread.start()
     base = url.split("/?", maxsplit=1)[0]
     try:
+        unauthenticated_chunk_retry = urllib.request.Request(
+            f"{base}/api/chunk-retries/disclosure",
+            data=json.dumps({"article_id": "anything"}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(unauthenticated_chunk_retry, timeout=2)
+        assert exc_info.value.code == 403
+
         with pytest.raises(urllib.error.HTTPError) as exc_info:
             urllib.request.urlopen(f"{base}/api/articles", timeout=2)
         assert exc_info.value.code == 403
@@ -589,12 +731,16 @@ def test_dashboard_page_has_no_remote_resources() -> None:
     assert "/api/reviews" in combined
     assert "/api/chunks" in combined
     assert "/api/original-text" in combined
+    assert "/api/chunk-retries/disclosure" in combined
+    assert "/api/chunk-retries/generate" in combined
     assert "X-Corpus-Token" in combined
     assert 'id="subtopic-dialog"' in combined
+    assert 'id="chunk-retry-dialog"' in combined
     assert 'id="chunk-dialog"' in combined
     assert 'id="original-dialog"' in combined
     assert "查看分块" in combined
     assert "查看原文" in combined
+    assert "AI 分块" in combined
     assert ".original-dialog" in combined
     assert "overflow: hidden" in combined
     assert "暂无已批准细话题" in combined

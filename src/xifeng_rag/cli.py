@@ -32,6 +32,7 @@ from xifeng_rag.article_search import (
     record_article_build_failure,
     search_articles,
 )
+from xifeng_rag.chunk_retry import chunk_retry_target, run_codex_chunk_retry
 from xifeng_rag.chunking import (
     CodexCliClient,
     OllamaClient,
@@ -602,6 +603,8 @@ def corpus_manage(
             article_index_builder=_article_index_builder(runtime.settings),
             subtopic_generator_factory=subtopic_generator,
             subtopic_model=codex_settings.default_model,
+            chunk_retry_generator_factory=subtopic_generator,
+            chunk_retry_max_retries=codex_settings.max_retries,
             open_browser=not no_open,
         )
     except Exception as exc:
@@ -720,9 +723,11 @@ def chunks_retry(
         elif provider == "codex-cli":
             codex_settings = runtime.settings.chunking.codex_cli
             selected_model = model or codex_settings.default_model
-            typer.echo(f"文章：{article_title}")
-            typer.echo(f"文章版本：{version_id}")
-            typer.echo(f"清洗后正文：{character_count} 字符，{unit_count or 0} 个原子单元")
+            with runtime.database.session() as session:
+                target = chunk_retry_target(session, article_id, expected_version_id=version_id)
+            typer.echo(f"文章：{target.article_title}")
+            typer.echo(f"文章版本：{target.version_id}")
+            typer.echo(f"清洗后正文：{target.character_count} 字符，{target.unit_count} 个原子单元")
             typer.echo("外部服务：OpenAI Codex CLI（复用当前 ChatGPT 登录）")
             typer.echo(f"模型：{selected_model}")
             typer.echo("训练使用取决于当前 ChatGPT 账户的数据控制设置。")
@@ -730,10 +735,27 @@ def chunks_retry(
             if not typer.confirm("确认将这篇文章发送给 OpenAI Codex？"):
                 typer.echo("已取消，未发送正文，也未创建提案。")
                 return
-            codex_client = CodexCliClient(codex_settings, selected_model)
-            codex_client.preflight()
-            generator = codex_client
-            max_retries = codex_settings.max_retries
+
+            def codex_generator(selected: str) -> CodexCliClient:
+                client = CodexCliClient(codex_settings, selected)
+                client.preflight()
+                return client
+
+            outcome = run_codex_chunk_retry(
+                runtime.database,
+                article_id,
+                version_id,
+                codex_generator,
+                selected_model,
+                codex_settings.max_retries,
+                custom_prompt=custom_prompt,
+            )
+            typer.echo(f"并列提案 {outcome.proposal_id}：{outcome.version_id}")
+            for warning in outcome.warnings:
+                typer.echo(f"  警告：{warning}")
+            if outcome.status == ProposalStatus.FAILED:
+                raise RuntimeError("提案失败；请查看 chunks list 后重试")
+            return
         else:
             profile = runtime.settings.chunking.external_profiles.get(provider)
             if profile is None:

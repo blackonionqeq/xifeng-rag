@@ -17,6 +17,7 @@ from pydantic import ValidationError
 from sqlalchemy import func, select
 
 from xifeng_rag.article_overviews import approve_article_overview
+from xifeng_rag.chunk_retry import chunk_retry_target, run_codex_chunk_retry
 from xifeng_rag.corpus import discover_markdown, scan_corpus
 from xifeng_rag.domain import (
     ArticleSubtopics,
@@ -60,6 +61,13 @@ class ScanInProgressError(RuntimeError):
     pass
 
 
+class ChunkRetryInProgressError(RuntimeError):
+    pass
+
+
+AI_CHUNK_MODEL = "gpt-5.6-terra"
+
+
 class OriginalTextDetails(TypedDict):
     article_id: str
     article_title: str
@@ -86,6 +94,8 @@ class CorpusDashboardApplication:
         article_index_builder: ArticleIndexBuilder | None = None,
         subtopic_generator_factory: Callable[[str], StructuredGenerator] | None = None,
         subtopic_model: str = "gpt-5.6-terra",
+        chunk_retry_generator_factory: Callable[[str], StructuredGenerator] | None = None,
+        chunk_retry_max_retries: int = 1,
         token: str | None = None,
     ) -> None:
         self.database = database
@@ -98,9 +108,13 @@ class CorpusDashboardApplication:
         self.article_index_builder = article_index_builder
         self.subtopic_generator_factory = subtopic_generator_factory
         self.subtopic_model = subtopic_model
+        self.chunk_retry_generator_factory = chunk_retry_generator_factory
+        self.chunk_retry_max_retries = chunk_retry_max_retries
         self.token = token or secrets.token_urlsafe(32)
         self._scan_lock = threading.Lock()
         self._child_lock = threading.Lock()
+        self._chunk_retry_lock = threading.Lock()
+        self._chunk_retries_in_progress: set[str] = set()
         self._review_servers: list[tuple[ReviewHTTPServer, threading.Thread]] = []
         self._subtopic_review_servers: list[tuple[SubtopicReviewHTTPServer, threading.Thread]] = []
 
@@ -276,6 +290,16 @@ class CorpusDashboardApplication:
                     "first_imported_at": _isoformat(article.created_at),
                     "latest_version_id": latest.id if latest is not None else None,
                     "latest_status": latest.status if latest is not None else "discovered",
+                    "can_retry_chunks": bool(
+                        article.active
+                        and latest is not None
+                        and latest.active
+                        and latest.status
+                        in {
+                            VersionStatus.PENDING_CHUNKING.value,
+                            VersionStatus.PENDING_REVIEW.value,
+                        }
+                    ),
                     "indexed_version_id": indexed.id if indexed is not None else None,
                     "indexed_chunk_count": indexed_chunk_count,
                     "proposal_count": len(proposals),
@@ -600,6 +624,63 @@ class CorpusDashboardApplication:
             self._review_servers.append((server, thread))
         return {"url": url, "message": "审核页面已启动"}
 
+    def chunk_retry_disclosure(self, body: object) -> dict[str, object]:
+        if not isinstance(body, dict) or not isinstance(body.get("article_id"), str):
+            raise ValueError("必须提供单篇文章 ID")
+        with self.database.session() as session:
+            target = chunk_retry_target(session, body["article_id"])
+        return {
+            "article_id": target.article_id,
+            "article_title": target.article_title,
+            "version_id": target.version_id,
+            "character_count": target.character_count,
+            "unit_count": target.unit_count,
+            "provider": "codex-cli",
+            "model": AI_CHUNK_MODEL,
+            "max_requests": self.chunk_retry_max_retries + 1,
+        }
+
+    def generate_chunk_retry(self, body: object) -> dict[str, object]:
+        if (
+            not isinstance(body, dict)
+            or body.get("confirmed") is not True
+            or not isinstance(body.get("article_id"), str)
+            or not isinstance(body.get("version_id"), str)
+        ):
+            raise ValueError("必须明确确认单篇 AI 分块")
+        if self.chunk_retry_generator_factory is None:
+            raise ValueError("Codex AI 分块生成器未配置")
+        article_id = body["article_id"]
+        version_id = body["version_id"]
+        with self._chunk_retry_lock:
+            if version_id in self._chunk_retries_in_progress:
+                raise ChunkRetryInProgressError("这篇文章正在进行 AI 分块")
+            self._chunk_retries_in_progress.add(version_id)
+        try:
+            outcome = run_codex_chunk_retry(
+                self.database,
+                article_id,
+                version_id,
+                self.chunk_retry_generator_factory,
+                AI_CHUNK_MODEL,
+                self.chunk_retry_max_retries,
+            )
+            if outcome.status == ProposalStatus.FAILED:
+                raise RuntimeError("AI 分块提案生成失败")
+            review = self.start_review(
+                {"version_id": outcome.version_id, "proposal_id": outcome.proposal_id}
+            )
+            return {
+                **review,
+                "message": "AI 分块完成，审核页面已启动",
+                "proposal_id": outcome.proposal_id,
+                "version_id": outcome.version_id,
+                "warnings": outcome.warnings,
+            }
+        finally:
+            with self._chunk_retry_lock:
+                self._chunk_retries_in_progress.discard(version_id)
+
     def subtopic_disclosure(self, body: object) -> dict[str, object]:
         if not isinstance(body, dict) or not isinstance(body.get("version_id"), str):
             raise ValueError("必须提供已索引文章版本")
@@ -712,6 +793,8 @@ def run_corpus_dashboard(
     article_index_builder: ArticleIndexBuilder | None = None,
     subtopic_generator_factory: Callable[[str], StructuredGenerator] | None = None,
     subtopic_model: str = "gpt-5.6-terra",
+    chunk_retry_generator_factory: Callable[[str], StructuredGenerator] | None = None,
+    chunk_retry_max_retries: int = 1,
     open_browser: bool = True,
 ) -> None:
     application = CorpusDashboardApplication(
@@ -725,6 +808,8 @@ def run_corpus_dashboard(
         article_index_builder=article_index_builder,
         subtopic_generator_factory=subtopic_generator_factory,
         subtopic_model=subtopic_model,
+        chunk_retry_generator_factory=chunk_retry_generator_factory,
+        chunk_retry_max_retries=chunk_retry_max_retries,
     )
     server, url = create_corpus_dashboard_server(application)
     print(f"本地语料管理地址：{url}")
@@ -808,6 +893,8 @@ def _handler_for(
                 "/api/overviews/approve",
                 "/api/subtopics/disclosure",
                 "/api/subtopics/generate",
+                "/api/chunk-retries/disclosure",
+                "/api/chunk-retries/generate",
                 "/api/shutdown",
             }:
                 self._json_error(HTTPStatus.NOT_FOUND, "接口不存在")
@@ -865,6 +952,28 @@ def _handler_for(
                     result = application.subtopic_disclosure(body)
                 except ValueError as exc:
                     self._json_error(HTTPStatus.CONFLICT, str(exc))
+                    return
+                self._json_response(HTTPStatus.OK, result)
+                return
+            if parsed.path == "/api/chunk-retries/disclosure":
+                try:
+                    result = application.chunk_retry_disclosure(body)
+                except ValueError as exc:
+                    self._json_error(HTTPStatus.CONFLICT, str(exc))
+                    return
+                self._json_response(HTTPStatus.OK, result)
+                return
+            if parsed.path == "/api/chunk-retries/generate":
+                try:
+                    result = application.generate_chunk_retry(body)
+                except (ValueError, ChunkRetryInProgressError) as exc:
+                    self._json_error(HTTPStatus.CONFLICT, str(exc))
+                    return
+                except Exception as exc:
+                    self._json_error(
+                        HTTPStatus.INTERNAL_SERVER_ERROR,
+                        f"AI 分块失败：{type(exc).__name__}",
+                    )
                     return
                 self._json_response(HTTPStatus.OK, result)
                 return

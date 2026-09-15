@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC
+from datetime import timedelta
 from pathlib import Path
 
 import numpy as np
@@ -344,8 +344,6 @@ def test_map_raises_when_suite_and_build_have_no_overlap(database: Database) -> 
 
 
 def test_latest_approved_wins_for_same_version(database: Database) -> None:
-    from datetime import datetime
-
     _add_subtopic_article(
         database,
         1,
@@ -358,6 +356,8 @@ def test_latest_approved_wins_for_same_version(database: Database) -> None:
     )
     # 再插一条更晚创建的 approved 集合, 标题不同.
     with database.session() as session:
+        previous = session.get(SubtopicSetRow, "recall-subtopics-1")
+        assert previous is not None
         session.add(
             SubtopicSetRow(
                 id="recall-subtopics-1-later",
@@ -368,7 +368,7 @@ def test_latest_approved_wins_for_same_version(database: Database) -> None:
                 model_id="test",
                 prompt_version="test",
                 schema_version="test",
-                created_at=datetime(2026, 9, 3, 12, 0, 0, tzinfo=UTC),
+                created_at=previous.created_at + timedelta(seconds=1),
                 subtopics_json=json.dumps(
                     {
                         "topics": [
