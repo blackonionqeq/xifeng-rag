@@ -718,6 +718,7 @@ def test_dashboard_http_requires_token_scans_and_shuts_down(
 
 def test_dashboard_page_has_no_remote_resources() -> None:
     static = Path(__file__).parents[1] / "src" / "xifeng_rag" / "corpus_static"
+    index_html = (static / "index.html").read_text(encoding="utf-8")
     combined = "\n".join(
         (static / name).read_text(encoding="utf-8")
         for name in ("index.html", "app.js", "style.css")
@@ -725,6 +726,10 @@ def test_dashboard_page_has_no_remote_resources() -> None:
     assert "http://" not in combined
     assert "https://" not in combined
     assert "扫描语料更新" in combined
+    assert '<option value="published_at">发布时间（新到旧）</option>' in combined
+    assert index_html.index('<option value="published_at">') < index_html.index(
+        '<option value="captured_at">'
+    )
     assert "同时导入已修改文章" in combined
     assert "include_modified" in combined
     assert "/api/scan" in combined
