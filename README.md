@@ -4,7 +4,7 @@
 
 当前已实现 V0 MVP 与 V1 单轮问答主链：确定性语料清洗、本地 AI 话题分块与人工审核、BM25 + Dense + RRF 混合检索、本地重排、确定性上下文组装、DeepSeek 结构化回答、稳定原文引用和基础检索评测。正式前端与多轮对话属于后续版本。
 
-当前语料和 pilot 评测足以验证工作流，但不足以支撑参数或模型的泛化结论。近期重点是扩大已审核语料、建立正式 benchmark，并补齐不可回答、跨文章、引用与最终回答质量评测。具体进度见[版本路线与实验方向](docs/design/roadmap.md)。
+本地语料、已批准文章、活动索引和评测题集的数量会持续变化；在项目根目录运行 `uv run python scripts/current_status.py` 查询当前数据库状态，不以文档中的历史实验数字判断现状。现有 pilot 评测只用于验证工作流，近期重点是建立正式 benchmark，并补齐不可回答、跨文章、引用与最终回答质量评测。具体进度见[版本路线与实验方向](docs/design/roadmap.md)。
 
 ## 当前能力
 
@@ -37,6 +37,14 @@ DEEPSEEK_API_KEY=your-key-here
 真实进程环境变量优先于 `.env`。本地模型和缓存路径通过 Git 忽略的 `config.local.yaml` 覆盖；技术选择和默认模型见[技术栈](docs/design/technology-stack.md)。
 
 ## 最短流程
+
+查看当前本地状态（只读，不扫描外部语料，也不加载模型）：
+
+```powershell
+uv run python scripts/current_status.py
+```
+
+脚本使用与 CLI 相同的本地配置定位 SQLite；`--json` 可输出机器可读结果，`--db <路径>` 可查询指定数据库。它分别报告已导入、来源有效、已批准文章、当前可建索引的话题块，以及活动索引快照是否与当前选择一致；若不一致，不能将“可建索引”数量视为当前活动索引覆盖量。
 
 ```powershell
 uv run xifeng doctor
