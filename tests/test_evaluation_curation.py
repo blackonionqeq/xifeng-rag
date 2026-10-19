@@ -18,7 +18,9 @@ from xifeng_rag.evaluation_curation import (
     AnswerPoint,
     DatasetPurpose,
     EvidenceRange,
+    QuestionDifficulty,
     QuestionDraft,
+    QuestionOrigin,
     ReviewedAnswer,
     apply_ai_proposal,
     create_dataset,
@@ -172,11 +174,82 @@ def test_create_review_and_freeze_stable_evidence(database: Database, tmp_path: 
         dataset = session.get(EvaluationDatasetRow, dataset_id)
         assert dataset is not None and dataset.status == "frozen"
         assert session.scalar(select(func.count()).select_from(EvaluationEvidenceRow)) == 1
-        assert (
-            session.scalar(select(func.count()).select_from(EvaluationSnapshotArticleRow)) == 1
-        )
+        assert session.scalar(select(func.count()).select_from(EvaluationSnapshotArticleRow)) == 1
         with pytest.raises(ValueError, match="冻结评测集不可修改"):
             save_reviewed_answer(session, question_id, _review_value())
+
+
+def test_question_metadata_is_editable_and_omitted_values_are_preserved(
+    database: Database, tmp_path: Path
+) -> None:
+    version_id = _indexed_fixture(database, tmp_path)
+    with database.session() as session:
+        dataset = create_dataset(session, "正式开发集", "v0.1", DatasetPurpose.BENCHMARK)
+        question = save_question(
+            session,
+            dataset.id,
+            QuestionDraft(
+                query="一道已见过的简单问题",
+                version_id=version_id,
+                difficulty=QuestionDifficulty.EASY,
+                origin=QuestionOrigin.LEGACY_SEEN,
+            ),
+        )
+        question_id = question.id
+    with database.session() as session:
+        save_question(
+            session,
+            dataset.id,
+            QuestionDraft(query="修改措辞", version_id=version_id),
+            question_id,
+        )
+        document = question_document(session, question_id)
+        assert document["question"]["difficulty"] == "easy"  # type: ignore[index]
+        assert document["question"]["origin"] == "legacy_seen"  # type: ignore[index]
+
+
+def test_unanswerable_question_has_no_evidence_and_can_be_frozen(
+    database: Database, tmp_path: Path
+) -> None:
+    version_id = _indexed_fixture(database, tmp_path)
+    with database.session() as session:
+        dataset = create_dataset(session, "拒答集", "v0.1", DatasetPurpose.BENCHMARK)
+        question = save_question(
+            session,
+            dataset.id,
+            QuestionDraft(
+                query="文章没有说明的外部数据是什么？",
+                version_id=version_id,
+                split="holdout",
+                origin=QuestionOrigin.NEW_HOLDOUT,
+                answerable=False,
+            ),
+        )
+        assert question.scope == "corpus"
+        save_reviewed_answer(
+            session,
+            question.id,
+            ReviewedAnswer(
+                reference_answer="冻结语料没有充分证据，应明确拒答。",
+                answer_points=[],
+                reviewed=True,
+            ),
+        )
+        outcome = freeze_dataset(session, dataset.id)
+        assert outcome.question_count == 1
+
+
+def test_unanswerable_question_rejects_evidence(database: Database, tmp_path: Path) -> None:
+    version_id = _indexed_fixture(database, tmp_path)
+    with database.session() as session:
+        dataset = create_dataset(session, "拒答校验", "v0.1", DatasetPurpose.BENCHMARK)
+        question = save_question(
+            session,
+            dataset.id,
+            QuestionDraft(query="语料外问题", version_id=version_id, answerable=False),
+        )
+        with pytest.raises(ValueError, match="不可回答问题不能标注"):
+            save_reviewed_answer(session, question.id, _review_value())
 
 
 class FakeCodex:
@@ -197,9 +270,7 @@ class FakeCodex:
                         {
                             "claim_group": "point-1",
                             "claim": "候选要点",
-                            "evidence_ranges": [
-                                {"start_paragraph": 2, "end_paragraph": 2}
-                            ],
+                            "evidence_ranges": [{"start_paragraph": 2, "end_paragraph": 2}],
                             "uncertainty": "",
                         }
                     ],
@@ -272,6 +343,10 @@ def test_fresh_database_has_evaluation_curation_schema(database: Database) -> No
         "evaluation_ai_proposals",
     } <= table_names
     run_columns = {item["name"] for item in inspect(database.engine).get_columns("evaluation_runs")}
+    question_columns = {
+        item["name"] for item in inspect(database.engine).get_columns("evaluation_questions")
+    }
+    assert {"difficulty", "origin"} <= question_columns
     assert {
         "dataset_content_hash",
         "corpus_snapshot",
@@ -331,15 +406,98 @@ def test_frozen_evaluation_maps_ranges_and_checks_snapshot(
         assert isinstance(metrics, dict)
         assert metrics["recall_at_k"] == 0.5
         assert metrics["evidence_coverage_at_k"] == 0.5
+        assert metrics["by_difficulty"]["medium"]["question_count"] == 1
+        assert metrics["by_origin"]["new_dev"]["recall_at_k"] == 0.5
+        assert metrics["by_split"]["dev"]["recall_at_k"] == 0.5
+        assert metrics["answerable_question_count"] == 1
+        assert metrics["abstention_question_count"] == 0
     with database.session() as session:
         run = session.scalar(select(EvaluationRunRow))
         assert run is not None and run.dataset_content_hash
         assert "自造原文" not in run.details_json
+        detail = json.loads(run.details_json)[0]
+        assert detail["difficulty"] == "medium"
+        assert detail["origin"] == "new_dev"
         build = session.get(IndexBuildRow, "index_eval_test")
         assert build is not None
         build.corpus_snapshot = "d" * 64
     with database.session() as session, pytest.raises(ValueError, match="语料快照"):
         run_frozen_evaluation(session, dataset_id, k=1)
+
+
+def test_frozen_evaluation_excludes_unanswerable_questions_from_retrieval_metrics(
+    database: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    version_id = _indexed_fixture(database, tmp_path)
+    with database.session() as session:
+        dataset = create_dataset(session, "混合正式集", "v0.1", DatasetPurpose.BENCHMARK)
+        answerable = save_question(
+            session,
+            dataset.id,
+            QuestionDraft(query="作者怎样解释第二单元？", version_id=version_id),
+        )
+        save_reviewed_answer(session, answerable.id, _review_value())
+        unanswerable = save_question(
+            session,
+            dataset.id,
+            QuestionDraft(
+                query="文章没有提供的日期是什么？",
+                version_id=version_id,
+                split="holdout",
+                origin=QuestionOrigin.NEW_HOLDOUT,
+                answerable=False,
+            ),
+        )
+        save_reviewed_answer(
+            session,
+            unanswerable.id,
+            ReviewedAnswer(
+                reference_answer="语料没有提供日期，应拒答。",
+                answer_points=[],
+                reviewed=True,
+            ),
+        )
+        freeze_dataset(session, dataset.id)
+
+    def fake_search(session, query: str, top_k: int, build_id: str | None = None, **kwargs):
+        del session, query, top_k, build_id, kwargs
+        return [
+            RetrievalCandidate(
+                chunk_id="chunk_eval_1",
+                article_id="article_eval_test",
+                article_version=version_id,
+                article_title="自造评测文章",
+                original_text="不会保存的自造原文",
+                paragraph_range=(1, 2),
+                retrieval_scores=RetrievalScores(bm25=1.0),
+            )
+        ]
+
+    monkeypatch.setattr("xifeng_rag.evaluation.search", fake_search)
+    with database.session() as session:
+        outcome = run_frozen_evaluation(session, dataset.id, k=1)
+    metrics = outcome["metrics"]
+    assert isinstance(metrics, dict)
+    assert metrics["answerable_question_count"] == 1
+    assert metrics["abstention_question_count"] == 1
+    assert metrics["selected_split"] == "all"
+    assert metrics["recall_at_k"] == 0.5
+    assert set(metrics["by_split"]) == {"dev"}
+    with database.session() as session:
+        run = session.scalar(select(EvaluationRunRow))
+        assert run is not None
+        details = json.loads(run.details_json)
+    assert [item["should_abstain"] for item in details] == [False, True]
+
+    with database.session() as session:
+        dev_outcome = run_frozen_evaluation(
+            session, dataset.id, k=1, question_split="dev"
+        )
+    dev_metrics = dev_outcome["metrics"]
+    assert isinstance(dev_metrics, dict)
+    assert dev_metrics["question_count"] == 1
+    assert dev_metrics["abstention_question_count"] == 0
+    assert dev_metrics["selected_split"] == "dev"
 
 
 def test_frozen_evaluation_records_reranker_metadata(
@@ -509,9 +667,7 @@ def test_frozen_evaluation_records_query_rewrite_details(
             )
         ]
 
-    monkeypatch.setattr(
-        "xifeng_rag.evaluation.search_with_query_variants", fake_multi_search
-    )
+    monkeypatch.setattr("xifeng_rag.evaluation.search_with_query_variants", fake_multi_search)
     with database.session() as session:
         outcome = run_frozen_evaluation(
             session,
@@ -675,4 +831,7 @@ def test_evaluation_page_has_no_remote_resources() -> None:
     assert "window.confirm" in combined
     assert "/ai-disclosure" in combined
     assert "/api/ai-confirm" in combined
-    assert '.review-pane button' in combined
+    assert ".review-pane button" in combined
+    assert "衡量问题映射到正确证据的难度" in combined
+    assert "holdout 必须选 new_holdout" in combined
+    assert "整个冻结语料都缺少充分证据" in combined

@@ -794,6 +794,8 @@ def test_run_frozen_evaluation_without_subtopics_keeps_details_unchanged(
     assert set(details[0].keys()) == {
         "question_id",
         "split",
+        "difficulty",
+        "origin",
         "ranked_chunk_ids",
         "retrieval_candidates",
         "mapped_relevant_chunk_ids",

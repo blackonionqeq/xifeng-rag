@@ -247,6 +247,8 @@ class EvaluationQuestionRow(Base):
     ordinal: Mapped[int] = mapped_column(Integer)
     query: Mapped[str] = mapped_column(Text)
     split: Mapped[str] = mapped_column(String(20), index=True)
+    difficulty: Mapped[str] = mapped_column(String(20), default="medium")
+    origin: Mapped[str] = mapped_column(String(20), default="new_dev")
     scope: Mapped[str] = mapped_column(String(20))
     article_id: Mapped[str] = mapped_column(ForeignKey("articles.id"), index=True)
     version_id: Mapped[str] = mapped_column(ForeignKey("article_versions.id"), index=True)

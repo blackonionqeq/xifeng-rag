@@ -111,6 +111,9 @@ class EvaluationCurationApplication:
                         "ordinal": item.ordinal,
                         "query": item.query,
                         "split": item.split,
+                        "difficulty": item.difficulty,
+                        "origin": item.origin,
+                        "answerable": item.answerable,
                         "version_id": item.version_id,
                         "review_status": item.review_status,
                     }
@@ -155,6 +158,9 @@ class EvaluationCurationApplication:
             dataset = document["dataset"]
             if not isinstance(dataset, dict) or dataset["status"] != "draft":
                 raise ValueError("冻结评测集不能调用 AI")
+            question = document["question"]
+            if not isinstance(question, dict) or not question["answerable"]:
+                raise ValueError("不可回答问题不生成文章答案候选")
         fingerprint = _question_fingerprint(document, self.model)
         confirmation = secrets.token_urlsafe(32)
         with self._confirmation_lock:
@@ -236,9 +242,7 @@ class EvaluationCurationApplication:
                 "status": "failed",
                 "question_id": question_id,
                 "error_type": type(exc).__name__,
-                "error_message": (
-                    str(exc) if type(exc) is RuntimeError else "候选生成或校验失败"
-                ),
+                "error_message": (str(exc) if type(exc) is RuntimeError else "候选生成或校验失败"),
             }
         finally:
             self._job_lock.release()

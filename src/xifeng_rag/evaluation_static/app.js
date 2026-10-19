@@ -39,7 +39,7 @@ async function refresh() {
 function renderQuestions() {
   const rows = state.questions.filter(item => item.dataset_id === currentDataset);
   document.getElementById("question-list").innerHTML = rows.map(item =>
-    `<button class="question-item ${item.review_status}" data-id="${item.id}">${item.ordinal}. ${escapeHtml(item.query)}</button>`
+    `<button class="question-item ${item.review_status}" data-id="${item.id}"><span class="question-meta">${escapeHtml(item.split)} · ${escapeHtml(item.difficulty)} · ${escapeHtml(item.origin)} · ${item.answerable ? "可回答" : "应拒答"}</span>${item.ordinal}. ${escapeHtml(item.query)}</button>`
   ).join("");
   document.querySelectorAll(".question-item").forEach(button => button.addEventListener("click", () => loadQuestion(button.dataset.id)));
 }
@@ -59,8 +59,9 @@ async function loadQuestion(id) {
   document.getElementById("workspace").classList.remove("hidden");
   document.getElementById("workspace").classList.toggle("frozen", currentDocument.dataset.status === "frozen");
   document.getElementById("article-title").textContent = `${currentDocument.article.title} · ${currentDocument.article.version_id}`;
-  document.getElementById("current-question").textContent = currentDocument.question.query;
+  document.getElementById("current-question").textContent = `[${currentDocument.question.split} · ${currentDocument.question.difficulty} · ${currentDocument.question.origin} · ${currentDocument.question.answerable ? "可回答" : "应拒答"}] ${currentDocument.question.query}`;
   document.getElementById("reference-answer").value = currentDocument.question.reference_answer;
+  document.getElementById("reference-answer-label").textContent = currentDocument.question.answerable ? "人工确认的参考答案" : "预期拒答说明";
   document.getElementById("paragraphs").innerHTML = currentDocument.paragraphs.map(item =>
     `<div class="paragraph" data-number="${item.number}"><span class="unit-number">¶${item.number}</span>${escapeHtml(item.text)}</div>`
   ).join("");
@@ -70,9 +71,12 @@ async function loadQuestion(id) {
   const frozen = currentDocument.dataset.status === "frozen";
   for (const id of ["edit-question", "ai-assist", "add-point", "save-draft", "save-reviewed"]) document.getElementById(id).disabled = frozen;
   document.querySelectorAll(".review-pane input, .review-pane textarea, .review-pane button").forEach(control => control.disabled = frozen);
+  document.getElementById("add-point").disabled = frozen || !currentDocument.question.answerable;
+  document.getElementById("ai-assist").disabled = frozen || !currentDocument.question.answerable;
+  document.getElementById("selection-help").textContent = currentDocument.question.answerable ? "点击起点和终点选择证据" : "不可回答题不标注证据";
 }
 function selectParagraph(number) {
-  if (currentDocument.dataset.status === "frozen") return;
+  if (currentDocument.dataset.status === "frozen" || !currentDocument.question.answerable) return;
   if (selectionStart === null) {
     selectionStart = number;
     document.getElementById("selection-help").textContent = `起点 ¶${number}；再点一次选择终点`;
@@ -148,7 +152,7 @@ async function pollJob() {
 }
 function renderJob(job) {
   document.getElementById("ai-status").textContent = job.status === "running" ? "Codex 运行中…" : job.status === "failed" ? `失败：${job.error_message || job.error_type}` : job.status === "succeeded" ? "候选已生成" : "";
-  document.getElementById("ai-assist").disabled = job.status === "running" || currentDocument?.dataset.status === "frozen";
+  document.getElementById("ai-assist").disabled = job.status === "running" || currentDocument?.dataset.status === "frozen" || currentDocument?.question.answerable === false;
 }
 
 document.getElementById("dataset-form").addEventListener("submit", async event => {
@@ -157,9 +161,12 @@ document.getElementById("dataset-form").addEventListener("submit", async event =
   currentDataset = result.id; notice("draft 数据集已创建"); await refresh();
 });
 document.getElementById("dataset-list").addEventListener("change", event => { currentDataset = event.target.value; renderQuestions(); updateDatasetControls(); });
+document.getElementById("question-split").addEventListener("change", event => {
+  document.getElementById("question-origin").value = event.target.value === "holdout" ? "new_holdout" : "new_dev";
+});
 document.getElementById("question-form").addEventListener("submit", async event => {
   event.preventDefault();
-  const result = await api("/api/questions", {method: "POST", body: JSON.stringify({dataset_id: currentDataset, question_id: editingQuestionId, query: document.getElementById("question-query").value, version_id: document.getElementById("article-list").value, split: document.getElementById("question-split").value})});
+  const result = await api("/api/questions", {method: "POST", body: JSON.stringify({dataset_id: currentDataset, question_id: editingQuestionId, query: document.getElementById("question-query").value, version_id: document.getElementById("article-list").value, split: document.getElementById("question-split").value, difficulty: document.getElementById("question-difficulty").value, origin: document.getElementById("question-origin").value, answerable: document.getElementById("question-answerable").checked})});
   editingQuestionId = null; document.querySelector("#question-form button").textContent = "保存为新问题"; document.getElementById("question-query").value = ""; notice("问题已保存；修改题目会清空原人工答案和证据"); await refresh(); await loadQuestion(result.id);
 });
 document.getElementById("edit-question").addEventListener("click", () => {
@@ -168,6 +175,9 @@ document.getElementById("edit-question").addEventListener("click", () => {
   document.getElementById("question-query").value = currentDocument.question.query;
   document.getElementById("article-list").value = currentDocument.article.version_id;
   document.getElementById("question-split").value = currentDocument.question.split;
+  document.getElementById("question-difficulty").value = currentDocument.question.difficulty;
+  document.getElementById("question-origin").value = currentDocument.question.origin;
+  document.getElementById("question-answerable").checked = currentDocument.question.answerable;
   document.querySelector("#question-form button").textContent = "更新当前问题";
   document.getElementById("question-query").focus();
 });

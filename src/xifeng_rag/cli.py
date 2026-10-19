@@ -1703,6 +1703,10 @@ def eval_run(
     ctx: typer.Context,
     evalset: str,
     k: Annotated[int, typer.Option("--k", min=1, max=100)] = 5,
+    split: Annotated[
+        str,
+        typer.Option("--split", help="运行 all、dev 或 holdout；开发阶段应只运行 dev"),
+    ] = "all",
     build: Annotated[
         str | None, typer.Option("--build", help="指定兼容冻结快照的 Index Build")
     ] = None,
@@ -1772,6 +1776,10 @@ def eval_run(
                 "--subtopic-suite 和 --subtopic-candidate-k 只能与 --subtopics 一起使用"
             )
         legacy_path = Path(evalset)
+        if split not in {"all", "dev", "holdout"}:
+            raise ValueError("--split 必须是 all、dev 或 holdout")
+        if legacy_path.is_file() and split != "all":
+            raise ValueError("--split 只支持数据库中的冻结评测集")
         selected_mode = (
             RetrievalMode.BM25
             if legacy_path.is_file()
@@ -1838,6 +1846,7 @@ def eval_run(
                     rewrite_fusion_rrf_k=(runtime.settings.query_rewrite.fusion_rrf_k),
                     rewrite_candidate_limit=(runtime.settings.query_rewrite.candidate_limit),
                     evidence_assessment_enabled=(runtime.settings.evidence_assessment.enabled),
+                    question_split=split,
                     evidence_assessment_observation_k=(
                         runtime.settings.evidence_assessment.observation_k
                     ),

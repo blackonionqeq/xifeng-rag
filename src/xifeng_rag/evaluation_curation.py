@@ -45,6 +45,18 @@ class ReviewStatus(StrEnum):
     REVIEWED = "reviewed"
 
 
+class QuestionDifficulty(StrEnum):
+    EASY = "easy"
+    MEDIUM = "medium"
+    HARD = "hard"
+
+
+class QuestionOrigin(StrEnum):
+    LEGACY_SEEN = "legacy_seen"
+    NEW_DEV = "new_dev"
+    NEW_HOLDOUT = "new_holdout"
+
+
 class AIProposalStatus(StrEnum):
     PENDING_REVIEW = "pending_review"
     ACCEPTED = "accepted"
@@ -84,13 +96,16 @@ class QuestionDraft(BaseModel):
     query: str = Field(min_length=1, max_length=2000)
     version_id: str = Field(min_length=1)
     split: str = Field(default="dev", pattern="^(dev|holdout)$")
+    difficulty: QuestionDifficulty | None = None
+    origin: QuestionOrigin | None = None
+    answerable: bool = True
 
 
 class ReviewedAnswer(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     reference_answer: str = Field(min_length=1, max_length=10000)
-    answer_points: list[AnswerPoint] = Field(min_length=1, max_length=30)
+    answer_points: list[AnswerPoint] = Field(default_factory=list, max_length=30)
     reviewed: bool = False
 
 
@@ -182,6 +197,16 @@ def save_question(
         raise ValueError("文章版本没有可检索话题块")
     if dataset.purpose == DatasetPurpose.PILOT.value and value.split != "dev":
         raise ValueError("pilot 数据集只允许 dev 问题")
+    existing = session.get(EvaluationQuestionRow, question_id) if question_id else None
+    if question_id is not None and (existing is None or existing.dataset_id != dataset_id):
+        raise ValueError("问题不存在或不属于当前评测集")
+    origin = value.origin or (
+        QuestionOrigin(existing.origin) if existing is not None else QuestionOrigin.NEW_DEV
+    )
+    if value.split == "holdout" and origin != QuestionOrigin.NEW_HOLDOUT:
+        raise ValueError("holdout 问题必须标记为 new_holdout")
+    if value.split == "dev" and origin == QuestionOrigin.NEW_HOLDOUT:
+        raise ValueError("new_holdout 只能用于 holdout 问题")
     if question_id is None:
         ordinal = (
             session.scalar(
@@ -198,21 +223,28 @@ def save_question(
             ordinal=ordinal,
             query=value.query,
             split=value.split,
-            scope="article",
+            difficulty=(value.difficulty or QuestionDifficulty.MEDIUM).value,
+            origin=origin.value,
+            scope="article" if value.answerable else "corpus",
             article_id=version.article_id,
             version_id=version.id,
-            answerable=True,
+            answerable=value.answerable,
             review_status=ReviewStatus.DRAFT.value,
         )
         session.add(row)
     else:
-        row = session.get(EvaluationQuestionRow, question_id)
-        if row is None or row.dataset_id != dataset_id:
-            raise ValueError("问题不存在或不属于当前评测集")
+        assert existing is not None
+        row = existing
         row.query = value.query
         row.split = value.split
+        if value.difficulty is not None:
+            row.difficulty = value.difficulty.value
+        if value.origin is not None:
+            row.origin = value.origin.value
         row.article_id = version.article_id
         row.version_id = version.id
+        row.scope = "article" if value.answerable else "corpus"
+        row.answerable = value.answerable
         row.reference_answer = None
         row.review_status = ReviewStatus.DRAFT.value
         session.execute(
@@ -260,6 +292,8 @@ def question_document(session: Session, question_id: str) -> dict[str, object]:
             "id": question.id,
             "query": question.query,
             "split": question.split,
+            "difficulty": question.difficulty,
+            "origin": question.origin,
             "scope": question.scope,
             "answerable": question.answerable,
             "reference_answer": question.reference_answer or "",
@@ -303,9 +337,7 @@ def _evidence_to_points(rows: Sequence[EvaluationEvidenceRow]) -> list[dict[str,
         )
         ranges = point["evidence_ranges"]
         assert isinstance(ranges, list)
-        ranges.append(
-            {"start_paragraph": row.start_paragraph, "end_paragraph": row.end_paragraph}
-        )
+        ranges.append({"start_paragraph": row.start_paragraph, "end_paragraph": row.end_paragraph})
     return list(points.values())
 
 
@@ -316,11 +348,18 @@ def save_reviewed_answer(
     if question is None:
         raise ValueError("问题不存在")
     dataset = _require_draft_dataset(session, question.dataset_id)
-    paragraph_count = session.scalar(
-        select(func.count())
-        .select_from(ParagraphRow)
-        .where(ParagraphRow.version_id == question.version_id)
-    ) or 0
+    if question.answerable and not value.answer_points:
+        raise ValueError("可回答问题至少需要一个答案要点和证据范围")
+    if not question.answerable and value.answer_points:
+        raise ValueError("不可回答问题不能标注答案要点或证据范围")
+    paragraph_count = (
+        session.scalar(
+            select(func.count())
+            .select_from(ParagraphRow)
+            .where(ParagraphRow.version_id == question.version_id)
+        )
+        or 0
+    )
     seen_groups: set[str] = set()
     for point in value.answer_points:
         if point.claim_group in seen_groups:
@@ -383,9 +422,9 @@ def _candidate_prompt(document: dict[str, object]) -> str:
 的最小充分原子单元范围。多个不连续范围必须分别列出。若原文存在不确定性，在 uncertainty
 中说明。不要复制长篇原文。
 
-问题：{question['query']}
-文章标题：{article['title']}
-文章版本：{article['version_id']}
+问题：{question["query"]}
+文章标题：{article["title"]}
+文章版本：{article["version_id"]}
 
 编号正文：
 {numbered}"""
@@ -400,6 +439,8 @@ def generate_ai_proposal(
     question = session.get(EvaluationQuestionRow, question_id)
     if question is None:
         raise ValueError("问题不存在")
+    if not question.answerable:
+        raise ValueError("不可回答问题不生成文章答案候选")
     _require_draft_dataset(session, question.dataset_id)
     document = question_document(session, question_id)
     result = generator.generate(_candidate_prompt(document), candidate_schema())
@@ -427,9 +468,7 @@ def generate_ai_proposal(
     return row
 
 
-def review_ai_proposal(
-    session: Session, proposal_id: str, action: str
-) -> EvaluationAIProposalRow:
+def review_ai_proposal(session: Session, proposal_id: str, action: str) -> EvaluationAIProposalRow:
     proposal = session.get(EvaluationAIProposalRow, proposal_id)
     if proposal is None:
         raise ValueError("AI 候选不存在")
@@ -484,18 +523,21 @@ def freeze_dataset(session: Session, dataset_id: str) -> FreezeOutcome:
     ]
     if incomplete:
         raise ValueError(f"仍有 {len(incomplete)} 道问题未完成人工审核")
-    pending = session.scalar(
-        select(func.count())
-        .select_from(EvaluationAIProposalRow)
-        .join(
-            EvaluationQuestionRow,
-            EvaluationAIProposalRow.question_id == EvaluationQuestionRow.id,
+    pending = (
+        session.scalar(
+            select(func.count())
+            .select_from(EvaluationAIProposalRow)
+            .join(
+                EvaluationQuestionRow,
+                EvaluationAIProposalRow.question_id == EvaluationQuestionRow.id,
+            )
+            .where(
+                EvaluationQuestionRow.dataset_id == dataset.id,
+                EvaluationAIProposalRow.status == AIProposalStatus.PENDING_REVIEW.value,
+            )
         )
-        .where(
-            EvaluationQuestionRow.dataset_id == dataset.id,
-            EvaluationAIProposalRow.status == AIProposalStatus.PENDING_REVIEW.value,
-        )
-    ) or 0
+        or 0
+    )
     if pending:
         raise ValueError(f"仍有 {pending} 份 AI 候选待处理")
     build = session.scalar(select(IndexBuildRow).where(IndexBuildRow.active.is_(True)))
@@ -565,12 +607,16 @@ def freeze_dataset(session: Session, dataset_id: str) -> FreezeOutcome:
         ).all()
         if question.answerable and not evidence:
             raise ValueError(f"问题 {question.id} 没有人工确认的证据")
+        if not question.answerable and evidence:
+            raise ValueError(f"不可回答问题 {question.id} 不能包含证据")
         question_values.append(
             {
                 "id": question.id,
                 "ordinal": question.ordinal,
                 "query": question.query,
                 "split": question.split,
+                "difficulty": question.difficulty,
+                "origin": question.origin,
                 "scope": question.scope,
                 "article_id": question.article_id,
                 "version_id": question.version_id,

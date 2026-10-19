@@ -31,6 +31,28 @@
           <textarea id="question-query" required placeholder="人工原样录入问题"></textarea>
           <select id="article-list" required></select>
           <select id="question-split"><option value="dev">dev</option><option value="holdout">holdout</option></select>
+          <label class="question-field checkbox-field">
+            <span><input id="question-answerable" type="checkbox" checked> 语料可回答</span>
+            <small>取消后表示整个冻结语料都缺少充分证据；该题不计入检索命中指标，只用于端到端拒答检查。</small>
+          </label>
+          <label class="question-field">
+            <span>检索难度</span>
+            <select id="question-difficulty">
+              <option value="easy">easy · 表述接近，证据集中</option>
+              <option value="medium" selected>medium · 有改写或关系判断</option>
+              <option value="hard">hard · 需组合证据或排除干扰</option>
+            </select>
+            <small>衡量问题映射到正确证据的难度，不是拿到证据后的回答难度。</small>
+          </label>
+          <label class="question-field">
+            <span>题目来源</span>
+            <select id="question-origin">
+              <option value="new_dev" selected>new_dev · 未参与既往开发</option>
+              <option value="new_holdout">new_holdout · 封存到最终评估</option>
+              <option value="legacy_seen">legacy_seen · 已用于分析或调优</option>
+            </select>
+            <small>holdout 必须选 new_holdout，冻结后只在最终评估时运行，不能用于调参。</small>
+          </label>
           <button>保存为新问题</button>
         </form>
         <div id="question-list"></div>
@@ -49,7 +71,7 @@
           <span id="ai-status"></span>
         </div>
         <div id="proposals"></div>
-        <label>人工确认的参考答案<textarea id="reference-answer"></textarea></label>
+        <label><span id="reference-answer-label">人工确认的参考答案</span><textarea id="reference-answer"></textarea></label>
         <div class="pane-title"><h3>答案要点与证据</h3><button id="add-point" class="quiet">新增要点</button></div>
         <div id="answer-points"></div>
         <div class="actions">

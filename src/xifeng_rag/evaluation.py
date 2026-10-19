@@ -172,9 +172,12 @@ def run_frozen_evaluation(
     subtopic_weight: float = 1.0,
     evidence_assessment_enabled: bool = False,
     evidence_assessment_observation_k: int = 5,
+    question_split: str = "all",
 ) -> dict[str, object]:
     if k <= 0:
         raise ValueError("k 必须大于 0")
+    if question_split not in {"all", "dev", "holdout"}:
+        raise ValueError("question_split 必须是 all、dev 或 holdout")
     dataset = session.get(EvaluationDatasetRow, dataset_id)
     if dataset is None:
         raise ValueError("评测集不存在")
@@ -192,15 +195,20 @@ def run_frozen_evaluation(
     questions = list(
         session.scalars(
             select(EvaluationQuestionRow)
-            .where(EvaluationQuestionRow.dataset_id == dataset.id)
+            .where(
+                EvaluationQuestionRow.dataset_id == dataset.id,
+                *(
+                    (EvaluationQuestionRow.split == question_split,)
+                    if question_split != "all"
+                    else ()
+                ),
+            )
             .order_by(EvaluationQuestionRow.ordinal)
         ).all()
     )
     if not questions:
-        raise ValueError("冻结评测集没有问题")
-    child_manifest = (
-        read_child_manifest(Path(build.path) / "children.json") if layered else []
-    )
+        raise ValueError(f"冻结评测集没有 {question_split} 问题")
+    child_manifest = read_child_manifest(Path(build.path) / "children.json") if layered else []
     if layered and (embedding_provider is None or reranker is None or build_id is None):
         raise ValueError("分层评测需要显式 Build、Embedding Provider 和 Reranker")
     if query_rewriter is not None and (
@@ -246,13 +254,17 @@ def run_frozen_evaluation(
         evidence_ranges = [
             (item.version_id, item.start_paragraph, item.end_paragraph) for item in evidence
         ]
-        relevant_chunks = list(
-            session.scalars(
-                select(TopicChunkRow).where(
-                    TopicChunkRow.version_id.in_({item.version_id for item in evidence}),
-                )
-            ).all()
-        ) if evidence else []
+        relevant_chunks = (
+            list(
+                session.scalars(
+                    select(TopicChunkRow).where(
+                        TopicChunkRow.version_id.in_({item.version_id for item in evidence}),
+                    )
+                ).all()
+            )
+            if evidence
+            else []
+        )
         relevant = {
             chunk.id
             for chunk in relevant_chunks
@@ -371,7 +383,7 @@ def run_frozen_evaluation(
         latency_ms = (time.perf_counter() - started) * 1000
         assessment = (
             assess_evidence(candidates, evidence_assessment_observation_k)
-            if evidence_assessment_enabled
+            if evidence_assessment_enabled and question.answerable
             else None
         )
         if assessment is not None:
@@ -418,80 +430,76 @@ def run_frozen_evaluation(
             question_mrr = reciprocal_rank(ranked, relevant)
             question_ndcg = ndcg_at_k(ranked, relevant, k)
         question_detail: dict[str, object] = {
-                "question_id": question.id,
-                "split": question.split,
-                "ranked_chunk_ids": ranked,
-                "retrieval_candidates": [
-                    {
-                        "chunk_id": item.chunk_id,
-                        "source": item.source,
-                        "scores": item.retrieval_scores.model_dump(),
-                        "layer_sources": item.layer_sources,
-                        "parent_scores": (
-                            item.parent_retrieval_scores.model_dump()
-                            if item.parent_retrieval_scores is not None
-                            else None
-                        ),
-                        "child_scores": (
-                            item.child_retrieval_scores.model_dump()
-                            if item.child_retrieval_scores is not None
-                            else None
-                        ),
-                        "matched_child_ids": item.matched_child_ids,
-                        "matched_child_ranks": item.matched_child_ranks,
-                        "matched_ranges": item.matched_ranges,
-                        "expanded_range": item.expanded_range,
-                        "query_matches": [
-                            match.model_dump(mode="json") for match in item.query_matches
-                        ],
-                    }
-                    for item in candidates
-                ],
-                "mapped_relevant_chunk_ids": sorted(relevant),
-                "precision_at_k": question_precision,
-                "recall_at_k": question_recall,
-                "mrr": question_mrr,
-                "ndcg_at_k": question_ndcg,
-                "evidence_coverage_at_k": evidence_coverage_at_k(
-                    matched_ranges if layered else retrieved_ranges, evidence_ranges, k
-                ),
-                "expanded_evidence_coverage_at_k": (
-                    evidence_coverage_at_k(retrieved_ranges, evidence_ranges, k)
-                    if layered
-                    else None
-                ),
-                "latency_ms": latency_ms,
-                "should_abstain": not question.answerable,
-                "retrieval_mode": str(RetrievalMode(mode)),
-                "layered": layered,
-                "query_rewrite": (
-                    rewrite_result.model_dump(mode="json")
-                    if rewrite_result is not None
-                    else None
-                ),
-                "layered_config": (
-                    {
-                        "parent_candidate_k": layered_parent_candidate_k,
-                        "child_candidate_k": layered_child_candidate_k,
-                        "candidate_limit": layered_candidate_limit,
-                        "neighbor_window": layered_neighbor_window,
-                        "layer_mode": str(LayeredRetrievalMode(layered_mode)),
-                    }
-                    if layered
-                    else None
-                ),
-                "subtopic_recall": (
-                    {
-                        "nominated_chunk_ids": list(subtopic_audit.nominated_chunk_ids),
-                        "nominated_subtopic_titles": list(
-                            subtopic_audit.nominated_subtopic_titles
-                        ),
-                        "dropped_hit_count": subtopic_audit.dropped_hit_count,
-                    }
-                    if subtopic_audit is not None
-                    else None
-                ),
-            }
+            "question_id": question.id,
+            "split": question.split,
+            "difficulty": question.difficulty,
+            "origin": question.origin,
+            "ranked_chunk_ids": ranked,
+            "retrieval_candidates": [
+                {
+                    "chunk_id": item.chunk_id,
+                    "source": item.source,
+                    "scores": item.retrieval_scores.model_dump(),
+                    "layer_sources": item.layer_sources,
+                    "parent_scores": (
+                        item.parent_retrieval_scores.model_dump()
+                        if item.parent_retrieval_scores is not None
+                        else None
+                    ),
+                    "child_scores": (
+                        item.child_retrieval_scores.model_dump()
+                        if item.child_retrieval_scores is not None
+                        else None
+                    ),
+                    "matched_child_ids": item.matched_child_ids,
+                    "matched_child_ranks": item.matched_child_ranks,
+                    "matched_ranges": item.matched_ranges,
+                    "expanded_range": item.expanded_range,
+                    "query_matches": [
+                        match.model_dump(mode="json") for match in item.query_matches
+                    ],
+                }
+                for item in candidates
+            ],
+            "mapped_relevant_chunk_ids": sorted(relevant),
+            "precision_at_k": question_precision,
+            "recall_at_k": question_recall,
+            "mrr": question_mrr,
+            "ndcg_at_k": question_ndcg,
+            "evidence_coverage_at_k": evidence_coverage_at_k(
+                matched_ranges if layered else retrieved_ranges, evidence_ranges, k
+            ),
+            "expanded_evidence_coverage_at_k": (
+                evidence_coverage_at_k(retrieved_ranges, evidence_ranges, k) if layered else None
+            ),
+            "latency_ms": latency_ms,
+            "should_abstain": not question.answerable,
+            "retrieval_mode": str(RetrievalMode(mode)),
+            "layered": layered,
+            "query_rewrite": (
+                rewrite_result.model_dump(mode="json") if rewrite_result is not None else None
+            ),
+            "layered_config": (
+                {
+                    "parent_candidate_k": layered_parent_candidate_k,
+                    "child_candidate_k": layered_child_candidate_k,
+                    "candidate_limit": layered_candidate_limit,
+                    "neighbor_window": layered_neighbor_window,
+                    "layer_mode": str(LayeredRetrievalMode(layered_mode)),
+                }
+                if layered
+                else None
+            ),
+            "subtopic_recall": (
+                {
+                    "nominated_chunk_ids": list(subtopic_audit.nominated_chunk_ids),
+                    "nominated_subtopic_titles": list(subtopic_audit.nominated_subtopic_titles),
+                    "dropped_hit_count": subtopic_audit.dropped_hit_count,
+                }
+                if subtopic_audit is not None
+                else None
+            ),
+        }
         if assessment is not None:
             question_detail["evidence_assessment"] = assessment.model_dump(mode="json")
         details.append(question_detail)
@@ -502,19 +510,39 @@ def run_frozen_evaluation(
         "ndcg_at_k",
         "evidence_coverage_at_k",
     ]
+    answerable_details = [item for item in details if not item["should_abstain"]]
+    if not answerable_details:
+        raise ValueError("冻结评测集至少需要一道可回答问题来计算检索指标")
     metrics: dict[str, object] = {
-        name: statistics.fmean(float(str(item[name])) for item in details)
-        for name in metric_names
+        "question_count": len(details),
+        "selected_split": question_split,
+        "answerable_question_count": len(answerable_details),
+        "abstention_question_count": len(details) - len(answerable_details),
+        **{
+            name: statistics.fmean(float(str(item[name])) for item in answerable_details)
+            for name in metric_names
+        },
     }
+    for field in ("split", "difficulty", "origin"):
+        grouped: dict[str, dict[str, object]] = {}
+        for value in sorted({str(item[field]) for item in answerable_details}):
+            members = [item for item in answerable_details if item[field] == value]
+            grouped[value] = {
+                "question_count": len(members),
+                **{
+                    name: statistics.fmean(float(str(item[name])) for item in members)
+                    for name in metric_names
+                },
+            }
+        metrics[f"by_{field}"] = grouped
     if layered:
         metrics["expanded_evidence_coverage_at_k"] = statistics.fmean(
-            float(str(item["expanded_evidence_coverage_at_k"])) for item in details
+            float(str(item["expanded_evidence_coverage_at_k"]))
+            for item in answerable_details
         )
     latencies = [float(str(item["latency_ms"])) for item in details]
     metrics["latency_mean_ms"] = statistics.fmean(latencies)
-    metrics["latency_p95_ms"] = sorted(latencies)[
-        max(0, math.ceil(len(latencies) * 0.95) - 1)
-    ]
+    metrics["latency_p95_ms"] = sorted(latencies)[max(0, math.ceil(len(latencies) * 0.95) - 1)]
     rewrite_details: list[dict[str, object]] = []
     for item in details:
         rewrite_detail = item.get("query_rewrite")
@@ -526,9 +554,7 @@ def run_frozen_evaluation(
         metrics["rewrite_failure_rate"] = sum(
             item["status"] == QueryRewriteStatus.FAILED.value for item in rewrite_details
         ) / len(rewrite_details)
-    assessment_summary = (
-        summarize_evidence_assessments(assessments) if assessments else None
-    )
+    assessment_summary = summarize_evidence_assessments(assessments) if assessments else None
     persisted_metrics = dict(metrics)
     if assessment_summary is not None:
         persisted_metrics["evidence_assessment"] = assessment_summary
@@ -566,12 +592,8 @@ def run_frozen_evaluation(
             reranker_input_template_version=_metadata_text(
                 reranker_metadata, "input_template_version"
             ),
-            reranker_load_duration_ms=_metadata_float(
-                reranker_metadata, "load_duration_ms"
-            ),
-            reranker_truncated_candidate_count=(
-                truncated_count if reranker is not None else None
-            ),
+            reranker_load_duration_ms=_metadata_float(reranker_metadata, "load_duration_ms"),
+            reranker_truncated_candidate_count=(truncated_count if reranker is not None else None),
             reranker_process_memory_delta_bytes=_metadata_int(
                 reranker_metadata, "process_memory_delta_bytes"
             ),
@@ -653,9 +675,7 @@ def summarize_evidence_assessments(
         key = assessment.status.value
         status_counts[key] = status_counts.get(key, 0) + 1
 
-    successful = [
-        item for item in assessments if item.status == EvidenceAssessmentStatus.SUCCESS
-    ]
+    successful = [item for item in assessments if item.status == EvidenceAssessmentStatus.SUCCESS]
     summaries: dict[str, object] = {}
     for field_name in _ASSESSMENT_SUMMARY_FIELDS:
         values: list[float] = []
@@ -672,9 +692,7 @@ def summarize_evidence_assessments(
         }
 
     return {
-        "calculation_version": (
-            assessments[0].calculation_version if assessments else None
-        ),
+        "calculation_version": (assessments[0].calculation_version if assessments else None),
         "assessment_count": len(assessments),
         "status_counts": status_counts,
         "metrics": summaries,

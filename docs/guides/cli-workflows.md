@@ -161,7 +161,7 @@ uv run xifeng ask "要研究的问题" --mode hybrid --rerank --supplement on
 
 ```powershell
 uv run xifeng eval curate
-uv run xifeng eval run <FROZEN_DATASET_ID> --mode hybrid --k 5
+uv run xifeng eval run <FROZEN_DATASET_ID> --split dev --mode hybrid --k 5
 uv run xifeng eval run <FROZEN_DATASET_ID> --mode hybrid --rerank --rerank-candidate-k 20 --k 5
 uv run xifeng eval run <FROZEN_DATASET_ID> --mode hybrid --rerank --rewrite --k 5
 uv run xifeng eval run <FROZEN_DATASET_ID> --build <FROZEN_BUILD_ID> --mode hybrid --rerank --subtopics --k 5
@@ -176,6 +176,7 @@ uv run xifeng eval simulate-article-fallback <LAYERED_RESULT_JSON>
 `eval curate` 启动本地评测集工作台，用于录入问题、编辑参考答案和按原子单元标注证据范围。AI 辅助候选需要在显示外发范围后由用户二次确认，且必须人工接受或修改才能成为金标准。
 
 `eval run` 只接受冻结数据集，并拒绝在不匹配的 Index Build 上运行。pilot、正式 dev/holdout 的范围和实验纪律见[版本路线](../design/roadmap.md)，具体审核标准见[评测问题编写与 AI 草案审核指南](evaluation-question-writing.md)。
+正式 benchmark 在开发阶段必须使用 `--split dev`；只有最终评估时才运行 `--split holdout`。
 
 `--subtopics` 在常规 Hybrid+Rerank 之上叠加细话题召回通道：问题命中已批准细话题后提名其父
 TopicChunk，与 BM25/Dense 做四路加权 RRF 再重排。需要先 `articles build-layered-index` 生成分层
