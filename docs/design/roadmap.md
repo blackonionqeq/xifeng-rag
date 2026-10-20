@@ -31,7 +31,8 @@ evidence coverage@K。
 
 ### V1：混合检索主题研究台
 
-状态：单轮问答主链已完成；跨文章主题研究、真正的增量派生索引和正式产品入口尚未完成。
+状态：单轮问答主链、本地演示和项目控制台已完成；跨文章主题研究、真正的增量派生索引和
+正式产品入口尚未完成。
 
 - 本地 Embedding；
 - Dense + BM25 + RRF；
@@ -63,8 +64,8 @@ Contextual Retrieval，以及本地/外部 Generator 对比。HyDE、RAPTOR、�
 
 ### 当前后续顺序
 
-1. 完成并冻结 10 道首版正式 benchmark：6 道单文章可回答 dev、2 道单文章可回答 holdout、
-   2 道不可回答 holdout。暂不加入跨文章题。题目保存检索难度，并以 `legacy_seen`、`new_dev`、
+1. 10 道首版正式 benchmark 已完成并冻结：6 道单文章可回答 dev、2 道单文章可回答 holdout、
+   2 道不可回答 holdout。当前不加入跨文章题。题目保存检索难度，并以 `legacy_seen`、`new_dev`、
    `new_holdout` 区分用途；运行结果按 split、难度和来源分组。
 2. 独立的“主题反查文章”累计索引、三模式评测，以及概括/关键词/细话题/原文四层隔离实验与
    降级重放已跑通；早期 6 道真实题上的 `disagreement_cascade` 结果只是临时默认策略的
@@ -73,16 +74,16 @@ Contextual Retrieval，以及本地/外部 Generator 对比。HyDE、RAPTOR、�
    上下文成本决定是否调整，再显式运行 holdout。第一版采用确定性状态、引用和证据范围指标，
    不引入自动语义裁判或新的人工评分页面；设计见
    [端到端回答与引用评测设计](../specs/2026-10-19-end-to-end-answer-evaluation-design.md)。
-4. 本地面试演示入口已经实现，集中展示文章反查、证据披露、回答与引用核验；公开演示仍应
-   换用自造短文本语料。
+4. 本地面试演示入口已经实现，集中展示文章反查、证据披露、回答与引用核验；项目控制台集中
+   启动演示、语料管理和评测策展页面，并提供常用命令速查。公开演示仍应换用自造短文本语料。
 5. 基于扩大后的 dev 集验证证据观测信号；需要补检索时优先研究 TopicChunk 与分层结果的
    比较或合并，不用单一绝对阈值直接替换结果。正向证据检索的细话题召回通道
    （`eval run --subtopics`）已在 pilot 6 题上实验并得到负结果（提名父块结构整体退化，
    不默认启用），设计见[正查细话题召回通道设计](../specs/2026-09-03-subtopic-recall-channel-design.md)；
    复验或改结构须在扩大的 dev 集上进行。
-5. 随语料规模扩大，实现向量与 BM25 派生产物的逐文章增量构建和原子切换。
-6. 验证跨文章主题综合与时间变化，再建设 FastAPI 和正式 Svelte 研究界面。
-7. 在正式 dev 集上按单变量原则比较 contextual text、Embedding、Reranker、切块和预算；
+6. 随语料规模扩大，实现向量与 BM25 派生产物的逐文章增量构建和原子切换。
+7. 验证跨文章主题综合与时间变化，再建设 FastAPI 和正式 Svelte 研究界面。
+8. 在正式 dev 集上按单变量原则比较 contextual text、Embedding、Reranker、切块和预算；
    GraphRAG、HyDE、RAPTOR、压缩与 Self-RAG 保持后置。
 
 ### V2：图增强 RAG

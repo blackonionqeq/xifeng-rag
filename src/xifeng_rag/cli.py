@@ -55,8 +55,17 @@ from xifeng_rag.corpus import (
     scan_corpus,
     sha256_text,
 )
-from xifeng_rag.corpus_ui import run_corpus_dashboard
-from xifeng_rag.demo_ui import DemoApplication, QuestionHistoryStore, run_demo_server
+from xifeng_rag.corpus_ui import (
+    CorpusDashboardApplication,
+    create_corpus_dashboard_server,
+    run_corpus_dashboard,
+)
+from xifeng_rag.demo_ui import (
+    DemoApplication,
+    QuestionHistoryStore,
+    create_demo_server,
+    run_demo_server,
+)
 from xifeng_rag.domain import (
     AssemblyResult,
     AssemblyStatus,
@@ -72,7 +81,11 @@ from xifeng_rag.domain import (
     VersionStatus,
 )
 from xifeng_rag.evaluation import run_evaluation, run_frozen_evaluation
-from xifeng_rag.evaluation_ui import run_evaluation_server
+from xifeng_rag.evaluation_ui import (
+    EvaluationCurationApplication,
+    create_evaluation_server,
+    run_evaluation_server,
+)
 from xifeng_rag.evidence_assessment import assess_evidence
 from xifeng_rag.generation import (
     AnswerGenerationResult,
@@ -126,8 +139,15 @@ from xifeng_rag.storage import (
     ArticleVersionRow,
     ChunkProposalRow,
     Database,
+    EvaluationDatasetRow,
     IndexBuildRow,
     ParagraphRow,
+)
+from xifeng_rag.workbench_ui import (
+    RunningService,
+    ServiceDefinition,
+    WorkbenchApplication,
+    run_workbench,
 )
 
 app = typer.Typer(help="西风文章 RAG 研究台 V0", no_args_is_help=True)
@@ -539,6 +559,202 @@ def doctor(ctx: typer.Context) -> None:
         raise typer.Exit(1)
 
 
+def _create_demo_application(
+    runtime: Runtime,
+) -> tuple[DemoApplication, SentenceTransformersEmbeddingProvider]:
+    settings = runtime.settings.generator
+    if settings.provider != "deepseek":
+        raise ValueError(f"不支持的 Generator provider：{settings.provider}")
+    suite_path = runtime.settings.article_index_dir / LATEST_SUITE_FILE
+    if not suite_path.is_file():
+        raise FileNotFoundError(
+            "默认分层文章反查索引不存在，请运行 "
+            "`uv run xifeng articles build-layered-index --candidate-k 20`"
+        )
+    build_ids = load_layered_suite(suite_path)
+    provider = _embedding_provider(runtime.settings)
+
+    def article_searcher(query: str, top_k: int):
+        with runtime.database.session() as session:
+            outcome = search_articles_with_disagreement_cascade(
+                session,
+                query,
+                top_k,
+                embedding_provider=provider,
+                build_ids=build_ids,
+                fusion_rrf_k=runtime.settings.retrieval.rrf_k,
+            )
+        return outcome.results, [item.value for item in outcome.activated_layers]
+
+    def evidence_searcher(question: str, top_k: int) -> list[RetrievalCandidate]:
+        with runtime.database.session() as session:
+            return _search_with_profile(
+                session,
+                runtime,
+                question,
+                top_k,
+                build=None,
+                selected_mode=RetrievalMode.BM25,
+                provider=None,
+                reranker=None,
+                rerank_candidate_k=runtime.settings.reranker.candidate_k,
+                layered=False,
+            )
+
+    def generator_factory() -> EvidenceBoundGenerator:
+        api_key = os.environ.get(settings.api_key_env)
+        if not api_key:
+            raise ValueError(f"环境变量未设置：{settings.api_key_env}")
+        return EvidenceBoundGenerator(
+            DeepSeekClient(settings, api_key),
+            provider_id="deepseek",
+            model_id=settings.model,
+        )
+
+    application = DemoApplication(
+        article_searcher=article_searcher,
+        evidence_searcher=evidence_searcher,
+        generator_factory=generator_factory,
+        assembly_config=_assembly_config(runtime.settings),
+        provider_name="DeepSeek",
+        provider_url=settings.base_url,
+        model_id=settings.model,
+        question_history=QuestionHistoryStore(
+            runtime.settings.data_dir / "demo-question-history.json"
+        ),
+    )
+    return application, provider
+
+
+def _create_corpus_application(runtime: Runtime) -> CorpusDashboardApplication:
+    codex_settings = runtime.settings.chunking.codex_cli
+
+    def generator(model: str) -> CodexCliClient:
+        client = CodexCliClient(codex_settings, model)
+        client.preflight()
+        return client
+
+    return CorpusDashboardApplication(
+        runtime.database,
+        runtime.settings.source_dir,
+        runtime.settings.corpus.excluded_article_ids,
+        runtime.settings.review_dir,
+        runtime.settings.index_dir,
+        _hybrid_index_builder(runtime.settings),
+        article_index_dir=runtime.settings.article_index_dir,
+        article_index_builder=_article_index_builder(runtime.settings),
+        subtopic_generator_factory=generator,
+        subtopic_model=codex_settings.default_model,
+        chunk_retry_generator_factory=generator,
+        chunk_retry_max_retries=codex_settings.max_retries,
+    )
+
+
+@app.command("workbench")
+def workbench_command(
+    ctx: typer.Context,
+    no_open: Annotated[
+        bool, typer.Option("--no-open", help="只打印地址，不自动打开浏览器")
+    ] = False,
+) -> None:
+    """启动统一的本地页面入口与常用命令速查。"""
+    runtime = _runtime(ctx)
+
+    def demo_service() -> RunningService:
+        application, provider = _create_demo_application(runtime)
+        server, url = create_demo_server(application)
+
+        def cleanup() -> None:
+            application.clear()
+            provider.close()
+
+        return RunningService(server, url, cleanup)
+
+    def corpus_service() -> RunningService:
+        application = _create_corpus_application(runtime)
+        server, url = create_corpus_dashboard_server(application)
+        return RunningService(server, url, application.shutdown_children)
+
+    def evaluation_service() -> RunningService:
+        application = EvaluationCurationApplication(
+            runtime.database, runtime.settings.chunking.codex_cli
+        )
+        server, url = create_evaluation_server(application)
+        return RunningService(server, url)
+
+    with runtime.database.session() as session:
+        benchmark = session.scalar(
+            select(EvaluationDatasetRow)
+            .where(
+                EvaluationDatasetRow.purpose == "benchmark",
+                EvaluationDatasetRow.status == "frozen",
+            )
+            .order_by(EvaluationDatasetRow.frozen_at.desc())
+            .limit(1)
+        )
+    dataset_id = benchmark.id if benchmark is not None else "<FROZEN_DATASET_ID>"
+
+    services = [
+        ServiceDefinition(
+            "demo",
+            "体验项目",
+            "文章反查、证据披露、结构化回答与原文引用核验。",
+            "uv run xifeng demo",
+            demo_service,
+        ),
+        ServiceDefinition(
+            "corpus",
+            "管理语料",
+            "扫描和查看文章状态，并进入分块、概括与细话题审核。",
+            "uv run xifeng corpus manage",
+            corpus_service,
+        ),
+        ServiceDefinition(
+            "evaluation",
+            "策展评测集",
+            "编写问题、标注金标准证据、审核候选并冻结题集。",
+            "uv run xifeng eval curate",
+            evaluation_service,
+        ),
+    ]
+    commands = [
+        {"title": "项目状态", "command": "uv run python scripts/current_status.py"},
+        {"title": "环境检查", "command": "uv run xifeng doctor"},
+        {"title": "构建证据索引", "command": "uv run xifeng index build"},
+        {
+            "title": "构建文章反查索引",
+            "command": "uv run xifeng articles build-layered-index --candidate-k 20",
+        },
+        {
+            "title": "正式 dev 检索评测",
+            "command": (
+                f"uv run xifeng eval run {dataset_id} --split dev --mode bm25 --k 5"
+            ),
+        },
+        {
+            "title": "正式 dev 回答评测",
+            "command": (
+                f"uv run xifeng eval answer-run {dataset_id} "
+                "--split dev --mode bm25 --k 5"
+            ),
+        },
+        {
+            "title": "正式 holdout 检索评测",
+            "command": (
+                f"uv run xifeng eval run {dataset_id} "
+                "--split holdout --mode bm25 --k 5"
+            ),
+        },
+    ]
+    try:
+        run_workbench(
+            WorkbenchApplication(services, commands),
+            open_browser=not no_open,
+        )
+    except Exception as exc:
+        _abort(exc)
+
+
 @app.command("demo")
 def demo_command(
     ctx: typer.Context,
@@ -550,68 +766,7 @@ def demo_command(
     runtime = _runtime(ctx)
     provider = None
     try:
-        settings = runtime.settings.generator
-        if settings.provider != "deepseek":
-            raise ValueError(f"不支持的 Generator provider：{settings.provider}")
-        suite_path = runtime.settings.article_index_dir / LATEST_SUITE_FILE
-        if not suite_path.is_file():
-            raise FileNotFoundError(
-                "默认分层文章反查索引不存在，请运行 "
-                "`uv run xifeng articles build-layered-index --candidate-k 20`"
-            )
-        provider = _embedding_provider(runtime.settings)
-        build_ids = load_layered_suite(suite_path)
-
-        def article_searcher(query: str, top_k: int):
-            assert provider is not None
-            with runtime.database.session() as session:
-                outcome = search_articles_with_disagreement_cascade(
-                    session,
-                    query,
-                    top_k,
-                    embedding_provider=provider,
-                    build_ids=build_ids,
-                    fusion_rrf_k=runtime.settings.retrieval.rrf_k,
-                )
-            return outcome.results, [item.value for item in outcome.activated_layers]
-
-        def evidence_searcher(question: str, top_k: int) -> list[RetrievalCandidate]:
-            with runtime.database.session() as session:
-                return _search_with_profile(
-                    session,
-                    runtime,
-                    question,
-                    top_k,
-                    build=None,
-                    selected_mode=RetrievalMode.BM25,
-                    provider=None,
-                    reranker=None,
-                    rerank_candidate_k=runtime.settings.reranker.candidate_k,
-                    layered=False,
-                )
-
-        def generator_factory() -> EvidenceBoundGenerator:
-            api_key = os.environ.get(settings.api_key_env)
-            if not api_key:
-                raise ValueError(f"环境变量未设置：{settings.api_key_env}")
-            return EvidenceBoundGenerator(
-                DeepSeekClient(settings, api_key),
-                provider_id="deepseek",
-                model_id=settings.model,
-            )
-
-        application = DemoApplication(
-            article_searcher=article_searcher,
-            evidence_searcher=evidence_searcher,
-            generator_factory=generator_factory,
-            assembly_config=_assembly_config(runtime.settings),
-            provider_name="DeepSeek",
-            provider_url=settings.base_url,
-            model_id=settings.model,
-            question_history=QuestionHistoryStore(
-                runtime.settings.data_dir / "demo-question-history.json"
-            ),
-        )
+        application, provider = _create_demo_application(runtime)
         run_demo_server(application, open_browser=not no_open)
     except Exception as exc:
         _abort(exc)

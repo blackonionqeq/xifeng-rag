@@ -4,12 +4,13 @@
 
 ## 1. 总体选择
 
-RAG 核心、索引、模型调用、评测与 API 使用 Python。前端延后开发，届时使用 Svelte，不在第一阶段引入前端工程。
+RAG 核心、索引、模型调用、评测与 API 使用 Python。第一阶段的本地页面使用原生静态资源；
+正式产品前端延后开发，届时使用 Svelte。
 
 分阶段交付：
 
 ```text
-阶段 1：Python 核心 + CLI + 自动化测试 + 评测
+阶段 1：Python 核心 + CLI + 本地页面 + 自动化测试 + 评测
 阶段 2：FastAPI
 阶段 3：Svelte 前端
 ```
@@ -39,7 +40,7 @@ RAG 核心、索引、模型调用、评测与 API 使用 Python。前端延后�
 | Reranker | 默认 `BAAI/bge-reranker-v2-m3`；后续对照 `Qwen/Qwen3-Reranker-0.6B` |
 | 上下文组装 | 自有确定性 Python 组件 + 规范 JSON |
 | CLI | Typer |
-| 本地管理、分块审核、评测策展与演示页 | Python 标准库 HTTP 服务 + 原生 HTML/CSS/JavaScript |
+| 本地控制台、管理、分块审核、评测策展与演示页 | Python 标准库 HTTP 服务 + 原生 HTML/CSS/JavaScript |
 | API | FastAPI，阶段 2 加入 |
 | 测试与质量 | pytest + Ruff + Pyright |
 | 实验分析 | 自定义指标，按需使用 Pandas/Jupyter |
@@ -107,9 +108,10 @@ Windows 使用官方 Ollama standalone CLI，不安装托盘应用、不注册�
 
 ## 5. 前端
 
-正式前端不属于第一阶段范围。第一阶段只有 CLI 按需启动、固定绑定回环地址的语料管理页与
-分块审核页；它们不新增服务框架或前端构建链，也不承担通用 API 职责。核心与 API 稳定后使用 Svelte；
-是否需要 SvelteKit、路由框架或 UI 组件库，到阶段 3 根据实际页面需求再决定。
+正式前端不属于第一阶段范围。第一阶段使用 CLI 按需启动、固定绑定回环地址的项目控制台、
+语料管理、分块与细话题审核、评测策展和面试演示页面；这些页面使用 Python 标准库 HTTP
+服务和原生静态资源，不增加前端构建链，也不承担通用 API 职责。核心与 API 稳定后使用
+Svelte；是否需要 SvelteKit、路由框架或 UI 组件库，到阶段 3 根据实际页面需求再决定。
 
 FastAPI 的响应模型应保持与前端框架无关，支持返回答案、引用、检索阶段分数和隐私提示。流式生成可以在阶段 2 设计，不提前影响阶段 1 的核心接口。
 

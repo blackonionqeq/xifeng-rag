@@ -13,6 +13,7 @@
 - **文章反查**：默认按概括、关键词、细话题和原文执行分层 `disagreement_cascade`，并保留累计文章文档 Hybrid 作为显式兼容策略；
 - **证据检索**：在已批准原文块上执行 BM25、Dense、RRF、本地 Cross-Encoder 重排，以及可选的分层检索和查询改写实验；
 - **引用回答**：按预算组装带稳定来源的证据，由用户显式触发 DeepSeek 生成结构化单轮回答；
+- **项目控制台**：集中启动演示台、语料管理和评测策展页面，并提供常用命令速查；
 - **本地演示**：在同一页面完成文章反查、证据预览、外发确认、结构化回答和原文引用核验；
 - **评测实验**：人工策展并冻结题集，在固定语料快照上评估检索质量；显式确认后可运行回答
   状态、引用覆盖、延迟和失败归因的端到端评测。
@@ -40,6 +41,22 @@ DEEPSEEK_API_KEY=your-key-here
 
 ## 最短流程
 
+统一查看并启动现有本地页面：
+
+```powershell
+uv run xifeng workbench
+```
+
+| 页面 | 独立命令 | 用途 |
+|---|---|---|
+| 项目控制台 | `uv run xifeng workbench` | 启动其他页面并复制常用命令 |
+| 演示台 | `uv run xifeng demo` | 文章反查和带引用问答 |
+| 语料管理 | `uv run xifeng corpus manage` | 扫描、状态查看以及分块和细话题审核入口 |
+| 评测策展 | `uv run xifeng eval curate` | 编写、审核与冻结评测题集 |
+
+分块审核页和细话题审核页由语料管理页针对具体文章打开。正式 benchmark 运行和索引构建是
+一次性命令，项目控制台提供命令速查，不会自动执行。
+
 查看当前本地状态（只读，不扫描外部语料，也不加载模型）：
 
 ```powershell
@@ -50,6 +67,7 @@ uv run python scripts/current_status.py
 
 ```powershell
 uv run xifeng doctor
+uv run xifeng workbench
 uv run xifeng corpus manage
 uv run xifeng corpus scan
 uv run xifeng chunks propose <ARTICLE_ID>
@@ -71,6 +89,7 @@ uv run xifeng demo
 
 完整的导入、审核、实验检索、文章反查和评测命令见 [CLI 工作流指南](docs/guides/cli-workflows.md)。DeepSeek 配置见 [Generator 快速使用](docs/guides/deepseek-generator-setup.md)，评测题编写见[评测问题与 AI 草案审核指南](docs/guides/evaluation-question-writing.md)。
 面试演示入口的边界见[本地演示入口设计](docs/specs/2026-10-20-local-demo-entry-design.md)。
+页面导航和服务生命周期见[本地工作台设计](docs/specs/2026-10-20-local-workbench-design.md)。
 
 ## 设计文档
 
