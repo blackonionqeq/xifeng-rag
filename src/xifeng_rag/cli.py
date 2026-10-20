@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Annotated
@@ -650,6 +651,49 @@ def _create_corpus_application(runtime: Runtime) -> CorpusDashboardApplication:
     )
 
 
+def _create_retrieval_evaluation_runner(
+    runtime: Runtime,
+) -> Callable[[dict[str, object]], dict[str, object]]:
+    def runner(request: dict[str, object]) -> dict[str, object]:
+        mode = RetrievalMode(str(request["mode"]))
+        rerank = bool(request["rerank"])
+        if rerank and mode != RetrievalMode.HYBRID:
+            raise ValueError("本地 Reranker 只支持 hybrid 检索")
+        provider = None
+        reranker = None
+        try:
+            if mode in {RetrievalMode.DENSE, RetrievalMode.HYBRID}:
+                provider = _embedding_provider(runtime.settings)
+            if rerank:
+                reranker = _reranker_provider(runtime.settings)
+            with runtime.database.session() as session:
+                return run_frozen_evaluation(
+                    session,
+                    str(request["dataset_id"]),
+                    int(str(request["k"])),
+                    build_id=str(request["build_id"]),
+                    mode=mode,
+                    embedding_provider=provider,
+                    bm25_candidate_k=runtime.settings.retrieval.bm25_candidate_k,
+                    dense_candidate_k=runtime.settings.retrieval.dense_candidate_k,
+                    rrf_k=runtime.settings.retrieval.rrf_k,
+                    reranker=reranker,
+                    rerank_candidate_k=runtime.settings.reranker.candidate_k,
+                    evidence_assessment_enabled=runtime.settings.evidence_assessment.enabled,
+                    question_split=str(request["split"]),
+                    evidence_assessment_observation_k=(
+                        runtime.settings.evidence_assessment.observation_k
+                    ),
+                )
+        finally:
+            if reranker is not None:
+                reranker.close()
+            if provider is not None:
+                provider.close()
+
+    return runner
+
+
 @app.command("workbench")
 def workbench_command(
     ctx: typer.Context,
@@ -677,7 +721,9 @@ def workbench_command(
 
     def evaluation_service() -> RunningService:
         application = EvaluationCurationApplication(
-            runtime.database, runtime.settings.chunking.codex_cli
+            runtime.database,
+            runtime.settings.chunking.codex_cli,
+            evaluation_runner=_create_retrieval_evaluation_runner(runtime),
         )
         server, url = create_evaluation_server(application)
         return RunningService(server, url)
@@ -711,8 +757,8 @@ def workbench_command(
         ),
         ServiceDefinition(
             "evaluation",
-            "策展评测集",
-            "编写问题、标注金标准证据、审核候选并冻结题集。",
+            "评测工作台",
+            "策展冻结题集，运行、查看和对比常规检索评测。",
             "uv run xifeng eval curate",
             evaluation_service,
         ),
@@ -2520,12 +2566,13 @@ def eval_curate(
         bool, typer.Option("--no-open", help="只打印地址，不自动打开浏览器")
     ] = False,
 ) -> None:
-    """启动本地评测集策展与证据审核工作台。"""
+    """启动本地评测集策展、检索评测与结果分析工作台。"""
     runtime = _runtime(ctx)
     try:
         run_evaluation_server(
             runtime.database,
             runtime.settings.chunking.codex_cli,
+            evaluation_runner=_create_retrieval_evaluation_runner(runtime),
             open_browser=not no_open,
         )
     except Exception as exc:

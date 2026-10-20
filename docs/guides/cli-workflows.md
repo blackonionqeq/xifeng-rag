@@ -12,10 +12,11 @@ uv run xifeng workbench
 |---|---|---|
 | 一级页面 | `xifeng demo` | 面试演示用的文章反查与带引用问答 |
 | 一级页面 | `xifeng corpus manage` | 语料状态、扫描及审核入口 |
-| 一级页面 | `xifeng eval curate` | 评测题集策展、审核与冻结 |
+| 一级页面 | `xifeng eval curate` | 题集策展、检索评测运行、历史结果与基线对比 |
 | 从属页面 | `xifeng chunks review ...` | 也可从语料管理页选择待审提案后打开 |
 | 从属页面 | 细话题审核 | 只从语料管理页按文章打开 |
-| 一次性任务 | `doctor`、索引构建、`eval run`、`eval answer-run` | 在终端运行；控制台提供可复制命令 |
+| 一次性任务 | `doctor`、索引构建、`eval answer-run` | 在终端运行；控制台提供可复制命令 |
+| 页面或 CLI | `eval run` | 常规检索评测可在页面运行；实验开关保留 CLI |
 
 项目控制台按需启动三个一级页面。再次点击运行中的服务会打开现有地址；关闭控制台会停止由
 它启动的页面。原有独立命令保持可用。
@@ -208,9 +209,15 @@ uv run xifeng eval compare-layered-article-discovery <BASELINE_JSON> <CURRENT_JS
 uv run xifeng eval simulate-article-fallback <LAYERED_RESULT_JSON>
 ```
 
-`eval curate` 启动本地评测集工作台，用于录入问题、编辑参考答案和按原子单元标注证据范围。AI 辅助候选需要在显示外发范围后由用户二次确认，且必须人工接受或修改才能成为金标准。
+`eval curate` 启动本地评测工作台。“题集策展”用于录入问题、编辑参考答案和按原子单元标注
+证据范围；AI 辅助候选需要在显示外发范围后由用户二次确认，且必须人工接受或修改才能成为
+金标准。“运行结果”可对冻结题集运行 BM25、Dense 或 Hybrid 检索评测，选择本地 Reranker，
+并查看汇总、难度/来源分组、逐题候选、证据覆盖和历史基线差值。页面只列出与题集语料快照
+兼容的 Index Build；运行 holdout 前会再次确认其不能用于反复调参。
 
 `eval run` 只接受冻结数据集，并拒绝在不匹配的 Index Build 上运行。pilot、正式 dev/holdout 的范围和实验纪律见[版本路线](../design/roadmap.md)，具体审核标准见[评测问题编写与 AI 草案审核指南](evaluation-question-writing.md)。
+页面与 CLI 复用同一计分和 `evaluation_runs` 持久化逻辑。分层检索、查询改写、细话题召回及
+候选深度覆盖等实验参数仍通过 CLI 显式运行，不放进首版页面的常用表单。
 
 正式题集冻结后，可单独运行端到端回答与引用评测：
 

@@ -9,12 +9,16 @@ button { border: 0; border-radius: 6px; padding: 8px 12px; color: white; backgro
 button:disabled { opacity: .5; cursor: wait; }
 button.quiet { background: #52645f; }
 button.danger { background: #9b423a; }
+.tabs { display: flex; gap: 6px; }
+.tabs button { background: #315249; }
+.tabs button.active { color: #19352d; background: #f4f1eb; }
 #notice { min-height: 32px; padding: 7px 24px; background: #e5dfd4; }
 #notice.error { color: #9b251e; }
 main { display: grid; grid-template-columns: 320px 1fr; min-height: calc(100vh - 112px); }
 .sidebar { padding: 16px; border-right: 1px solid #c9c1b5; background: #faf8f4; }
 .sidebar section { margin-bottom: 24px; }
 form { display: grid; gap: 8px; margin: 10px 0; }
+label { display: grid; gap: 4px; }
 input, textarea, select { width: 100%; border: 1px solid #b9b0a3; border-radius: 5px; padding: 8px; background: white; }
 textarea { min-height: 78px; resize: vertical; }
 .question-field { display: grid; gap: 4px; color: #403b34; font-size: 13px; font-weight: 650; }
@@ -46,4 +50,40 @@ textarea { min-height: 78px; resize: vertical; }
 .range button { padding: 0 3px; color: #9b251e; background: transparent; }
 .proposal { border-left: 4px solid #8a6d3b; background: #fff6dc; padding: 9px; margin: 8px 0; }
 .proposal pre { white-space: pre-wrap; max-height: 200px; overflow: auto; }
-@media (max-width: 980px) { main { grid-template-columns: 1fr; } .workspace { grid-template-columns: 1fr; } .article-pane { border-right: 0; } }
+.help { color: #6d655a; font-size: 13px; line-height: 1.45; }
+.inline-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.results-layout { grid-template-columns: 340px 1fr; }
+.results-pane { min-width: 0; padding: 20px; overflow: auto; max-height: calc(100vh - 112px); }
+.empty-state { padding: 48px; color: #6d655a; text-align: center; }
+.job-status { min-height: 24px; color: #26735f; font-size: 13px; }
+.job-status.error { color: #9b251e; }
+.result-heading { display: flex; justify-content: space-between; align-items: start; gap: 16px; margin-bottom: 14px; }
+.badge { border-radius: 14px; padding: 5px 9px; font-size: 12px; }
+.badge.good { color: #195b49; background: #d8eee5; }
+.badge.warn { color: #7d3a21; background: #fae0d3; }
+.metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 10px; }
+.metric-card { display: grid; gap: 5px; padding: 14px; border: 1px solid #d2cabe; border-radius: 8px; background: white; }
+.metric-card span { color: #6d655a; font-size: 12px; }
+.metric-card strong { font-size: 23px; }
+.metric-card small.improved { color: #1d725a; }
+.metric-card small.regressed { color: #aa332b; }
+.question-result em { font-style: normal; font-weight: 700; }
+.question-result em.improved { color: #1d725a; }
+.question-result em.regressed { color: #aa332b; }
+.result-section { margin-top: 24px; }
+.group-block { display: inline-block; vertical-align: top; min-width: 420px; margin: 12px 18px 0 0; }
+table { width: 100%; border-collapse: collapse; background: white; }
+th, td { padding: 8px; border-bottom: 1px solid #ddd5c9; text-align: right; }
+th:first-child, td:first-child { text-align: left; }
+.question-result { margin: 9px 0; border: 1px solid #d2cabe; border-radius: 8px; background: white; }
+.question-result.failed { border-left: 5px solid #b1473f; }
+.question-result > summary { display: flex; justify-content: space-between; gap: 12px; padding: 12px; cursor: pointer; }
+.question-result summary span:first-child { display: grid; gap: 4px; }
+.question-result summary small { color: #6d655a; }
+.diagnostic-grid { display: grid; grid-template-columns: minmax(260px, .7fr) minmax(400px, 1.3fr); gap: 16px; padding: 0 14px 14px; }
+.gold-evidence, .candidate { margin: 7px 0; padding: 9px; border-radius: 6px; background: #f6f3ee; }
+.gold-evidence p { margin-top: 5px; }
+.candidate.relevant { border-left: 4px solid #26735f; background: #eef7f3; }
+.candidate summary { cursor: pointer; }
+.candidate pre { max-height: 190px; overflow: auto; white-space: pre-wrap; font-family: inherit; font-size: 13px; }
+@media (max-width: 980px) { header { align-items: flex-start; flex-wrap: wrap; gap: 10px; } main, .results-layout { grid-template-columns: 1fr; } .workspace, .diagnostic-grid { grid-template-columns: 1fr; } .article-pane { border-right: 0; } .results-pane { max-height: none; } }

@@ -161,7 +161,8 @@ def test_eval_curate_starts_local_workspace(tmp_path: Path, monkeypatch) -> None
     )
     assert result.exit_code == 0
     assert called["args"][1].default_model == "gpt-5.6-terra"
-    assert called["kwargs"] == {"open_browser": False}
+    assert called["kwargs"]["open_browser"] is False
+    assert callable(called["kwargs"]["evaluation_runner"])
 
 
 def test_search_without_index_gives_next_command(tmp_path: Path) -> None:

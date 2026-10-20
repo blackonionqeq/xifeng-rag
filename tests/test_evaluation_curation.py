@@ -30,6 +30,11 @@ from xifeng_rag.evaluation_curation import (
     save_question,
     save_reviewed_answer,
 )
+from xifeng_rag.evaluation_results import (
+    compare_retrieval_runs,
+    list_retrieval_runs,
+    retrieval_run_detail,
+)
 from xifeng_rag.evaluation_ui import (
     EvaluationCurationApplication,
     create_evaluation_server,
@@ -425,6 +430,99 @@ def test_frozen_evaluation_maps_ranges_and_checks_snapshot(
         run_frozen_evaluation(session, dataset_id, k=1)
 
 
+def test_retrieval_results_list_detail_and_compare(
+    database: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset_id, question_id = _draft_question(database, tmp_path)
+    with database.session() as session:
+        save_reviewed_answer(session, question_id, _review_value())
+        freeze_dataset(session, dataset_id)
+
+    def fake_search(session, query: str, top_k: int, build_id: str | None = None, **kwargs):
+        del session, query, top_k, build_id, kwargs
+        return [
+            RetrievalCandidate(
+                chunk_id="chunk_eval_1",
+                article_id="article_eval_test",
+                article_version="version_eval_test",
+                article_title="自造评测文章",
+                original_text="只通过详情接口按需读取",
+                paragraph_range=(1, 2),
+                retrieval_scores=RetrievalScores(bm25=1.0),
+                source=["bm25"],
+            )
+        ]
+
+    monkeypatch.setattr("xifeng_rag.evaluation.search", fake_search)
+    with database.session() as session:
+        first = run_frozen_evaluation(session, dataset_id, k=1, question_split="dev")
+    with database.session() as session:
+        second = run_frozen_evaluation(session, dataset_id, k=1, question_split="dev")
+    with database.session() as session:
+        runs = list_retrieval_runs(session, dataset_id)
+        detail = retrieval_run_detail(session, str(second["run_id"]))
+        comparison = compare_retrieval_runs(session, str(first["run_id"]), str(second["run_id"]))
+
+    assert len(runs) == 2
+    assert detail["questions"][0]["query"] == "作者怎样解释第二单元？"  # type: ignore[index]
+    candidate = detail["questions"][0]["retrieval_candidates"][0]  # type: ignore[index]
+    assert candidate["article_title"] == "自造评测文章"
+    assert candidate["original_text"] == "自造块 1"
+    assert comparison["compatible"] is True
+    assert comparison["metrics"]["recall_at_k"]["delta"] == 0.0  # type: ignore[index]
+    assert comparison["questions"][0]["status"] == "unchanged"  # type: ignore[index]
+
+
+def test_evaluation_workspace_runs_frozen_dev_asynchronously(
+    database: Database, tmp_path: Path
+) -> None:
+    dataset_id, question_id = _draft_question(database, tmp_path)
+    with database.session() as session:
+        save_reviewed_answer(session, question_id, _review_value())
+        frozen = freeze_dataset(session, dataset_id)
+        build = session.scalar(select(IndexBuildRow).where(IndexBuildRow.active.is_(True)))
+        assert build is not None
+        build_id = build.id
+    received: list[dict[str, object]] = []
+
+    def runner(request: dict[str, object]) -> dict[str, object]:
+        received.append(request)
+        return {"run_id": "eval_web_test"}
+
+    application = EvaluationCurationApplication(
+        database,
+        CodexCliSettings(default_model="gpt-test"),
+        evaluation_runner=runner,
+    )
+    state = application.state()
+    assert state["datasets"][0]["corpus_snapshot"] == frozen.corpus_snapshot  # type: ignore[index]
+    application.start_evaluation(
+        {
+            "dataset_id": dataset_id,
+            "build_id": build_id,
+            "split": "dev",
+            "mode": "hybrid",
+            "k": 5,
+            "rerank": True,
+        }
+    )
+    for _ in range(100):
+        if application.evaluation_job()["status"] != "running":
+            break
+        time.sleep(0.01)
+    assert application.evaluation_job()["run_id"] == "eval_web_test"
+    assert received == [
+        {
+            "dataset_id": dataset_id,
+            "build_id": build_id,
+            "split": "dev",
+            "mode": "hybrid",
+            "k": 5,
+            "rerank": True,
+        }
+    ]
+
+
 def test_frozen_evaluation_excludes_unanswerable_questions_from_retrieval_metrics(
     database: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -490,9 +588,7 @@ def test_frozen_evaluation_excludes_unanswerable_questions_from_retrieval_metric
     assert [item["should_abstain"] for item in details] == [False, True]
 
     with database.session() as session:
-        dev_outcome = run_frozen_evaluation(
-            session, dataset.id, k=1, question_split="dev"
-        )
+        dev_outcome = run_frozen_evaluation(session, dataset.id, k=1, question_split="dev")
     dev_metrics = dev_outcome["metrics"]
     assert isinstance(dev_metrics, dict)
     assert dev_metrics["question_count"] == 1
@@ -831,6 +927,9 @@ def test_evaluation_page_has_no_remote_resources() -> None:
     assert "window.confirm" in combined
     assert "/ai-disclosure" in combined
     assert "/api/ai-confirm" in combined
+    assert "运行检索评测" in combined
+    assert "/api/evaluation-runs" in combined
+    assert "对比基线" in combined
     assert ".review-pane button" in combined
     assert "衡量问题映射到正确证据的难度" in combined
     assert "holdout 必须选 new_holdout" in combined

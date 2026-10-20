@@ -8,11 +8,15 @@
 </head>
 <body>
   <header>
-    <div><h1>评测集工作台</h1><p>人工问题、Codex 候选、稳定证据与冻结快照</p></div>
+    <div><h1>评测工作台</h1><p>题集策展、检索实验与逐题诊断</p></div>
+    <nav class="tabs" aria-label="工作台视图">
+      <button id="show-curation" class="active">题集策展</button>
+      <button id="show-results">运行结果</button>
+    </nav>
     <button id="shutdown" class="quiet">关闭工作台</button>
   </header>
   <div id="notice" role="status"></div>
-  <main>
+  <main id="curation-view">
     <aside class="sidebar">
       <section>
         <h2>数据集</h2>
@@ -78,6 +82,49 @@
           <button id="save-draft" class="quiet">保存审核草案</button>
           <button id="save-reviewed">保存并标记人工审核完成</button>
         </div>
+      </div>
+    </section>
+  </main>
+  <main id="results-view" class="results-layout hidden">
+    <aside class="sidebar">
+      <section>
+        <h2>运行检索评测</h2>
+        <p class="help">只运行冻结题集；默认使用 dev，所有检索和计分均在本地完成。</p>
+        <form id="run-form">
+          <label>冻结题集<select id="run-dataset" required></select></label>
+          <label>Index Build<select id="run-build" required></select></label>
+          <div class="inline-fields">
+            <label>split<select id="run-split"><option value="dev">dev</option><option value="holdout">holdout</option></select></label>
+            <label>Top-K<input id="run-k" type="number" min="1" max="100" value="5"></label>
+          </div>
+          <label>检索模式<select id="run-mode"><option value="hybrid">hybrid</option><option value="bm25">bm25</option><option value="dense">dense</option></select></label>
+          <label class="checkbox-field"><input id="run-rerank" type="checkbox" checked> 启用本地 Reranker</label>
+          <button id="run-submit">开始评测</button>
+        </form>
+        <div id="evaluation-status" class="job-status"></div>
+      </section>
+      <section>
+        <h2>历史运行</h2>
+        <select id="run-list" size="9"></select>
+        <label>对比基线<select id="baseline-run"><option value="">不对比</option></select></label>
+      </section>
+    </aside>
+    <section class="results-pane">
+      <div id="empty-results" class="empty-state">选择一个冻结题集运行评测，或从左侧打开历史结果。</div>
+      <div id="run-results" class="hidden">
+        <div class="result-heading">
+          <div><h2 id="result-title"></h2><p id="result-meta" class="help"></p></div>
+          <span id="comparison-status" class="badge"></span>
+        </div>
+        <div id="metric-cards" class="metric-grid"></div>
+        <section class="result-section">
+          <h3>分组结果</h3>
+          <div id="grouped-metrics"></div>
+        </section>
+        <section class="result-section">
+          <div class="result-heading"><h3>逐题诊断</h3><span class="help">低覆盖与退化题优先</span></div>
+          <div id="question-results"></div>
+        </section>
       </div>
     </section>
   </main>

@@ -29,10 +29,16 @@ from xifeng_rag.evaluation_curation import (
     save_question,
     save_reviewed_answer,
 )
+from xifeng_rag.evaluation_results import (
+    compare_retrieval_runs,
+    list_retrieval_runs,
+    retrieval_run_detail,
+)
 from xifeng_rag.storage import (
     Database,
     EvaluationDatasetRow,
     EvaluationQuestionRow,
+    IndexBuildRow,
 )
 from xifeng_rag.structured_generation import CodexCliClient
 
@@ -57,6 +63,7 @@ class EvaluationCurationApplication:
         codex_settings: CodexCliSettings,
         token: str | None = None,
         generator_factory: Callable[[], Any] | None = None,
+        evaluation_runner: Callable[[dict[str, object]], dict[str, object]] | None = None,
     ) -> None:
         self.database = database
         self.codex_settings = codex_settings
@@ -69,6 +76,9 @@ class EvaluationCurationApplication:
         self._confirmation_lock = threading.Lock()
         self._job_lock = threading.Lock()
         self._job: dict[str, object] = {"status": "idle"}
+        self._evaluation_runner = evaluation_runner
+        self._evaluation_job_lock = threading.Lock()
+        self._evaluation_job: dict[str, object] = {"status": "idle"}
 
     def state(self) -> dict[str, object]:
         with self.database.session() as session:
@@ -82,6 +92,13 @@ class EvaluationCurationApplication:
                     select(EvaluationQuestionRow).order_by(
                         EvaluationQuestionRow.dataset_id, EvaluationQuestionRow.ordinal
                     )
+                ).all()
+            )
+            builds = list(
+                session.scalars(
+                    select(IndexBuildRow)
+                    .where(IndexBuildRow.status == "active")
+                    .order_by(IndexBuildRow.created_at.desc())
                 ).all()
             )
             counts: dict[str, dict[str, int]] = {}
@@ -98,6 +115,7 @@ class EvaluationCurationApplication:
                         "purpose": item.purpose,
                         "status": item.status,
                         "content_hash": item.content_hash,
+                        "corpus_snapshot": item.index_corpus_snapshot,
                         "frozen_at": item.frozen_at.isoformat() if item.frozen_at else None,
                         "question_count": counts.get(item.id, {}).get("total", 0),
                         "reviewed_count": counts.get(item.id, {}).get("reviewed", 0),
@@ -120,9 +138,106 @@ class EvaluationCurationApplication:
                     for item in questions
                 ],
                 "articles": indexed_articles(session),
+                "builds": [
+                    {
+                        "id": item.id,
+                        "profile_id": item.profile_id,
+                        "corpus_snapshot": item.corpus_snapshot,
+                        "active": item.active,
+                        "created_at": item.created_at.isoformat(),
+                    }
+                    for item in builds
+                ],
                 "ai_job": self.job(),
+                "evaluation_job": self.evaluation_job(),
                 "model": self.model,
             }
+
+    def runs(self, dataset_id: str) -> list[dict[str, object]]:
+        with self.database.session() as session:
+            return list_retrieval_runs(session, dataset_id)
+
+    def run_detail(self, run_id: str) -> dict[str, object]:
+        with self.database.session() as session:
+            return retrieval_run_detail(session, run_id)
+
+    def compare_runs(self, baseline_id: str, current_id: str) -> dict[str, object]:
+        with self.database.session() as session:
+            return compare_retrieval_runs(session, baseline_id, current_id)
+
+    def start_evaluation(self, body: dict[str, object]) -> dict[str, object]:
+        if self._evaluation_runner is None:
+            raise RuntimeError("当前工作台未配置检索评测运行器")
+        dataset_id = str(body.get("dataset_id", ""))
+        split = str(body.get("split", "dev"))
+        mode = str(body.get("mode", "hybrid"))
+        build_id = str(body.get("build_id", ""))
+        try:
+            k = int(str(body.get("k", 5)))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("K 必须是整数") from exc
+        if split not in {"dev", "holdout"}:
+            raise ValueError("网页评测只支持 dev 或 holdout")
+        if split == "holdout" and body.get("confirm_holdout") is not True:
+            raise ValueError("运行 holdout 前必须明确确认不会用其反复调参")
+        if mode not in {"bm25", "dense", "hybrid"}:
+            raise ValueError("检索模式必须是 bm25、dense 或 hybrid")
+        if body.get("rerank") is True and mode != "hybrid":
+            raise ValueError("本地 Reranker 只支持 hybrid 检索")
+        if not 1 <= k <= 100:
+            raise ValueError("K 必须在 1 到 100 之间")
+        with self.database.session() as session:
+            dataset = session.get(EvaluationDatasetRow, dataset_id)
+            build = session.get(IndexBuildRow, build_id)
+            if dataset is None or dataset.status != "frozen":
+                raise ValueError("只有冻结评测集可以运行检索评测")
+            if build is None or build.status != "active":
+                raise ValueError("Index Build 不存在或不可用")
+            if dataset.index_corpus_snapshot != build.corpus_snapshot:
+                raise ValueError("Index Build 与冻结题集语料快照不一致")
+        if not self._evaluation_job_lock.acquire(blocking=False):
+            raise RuntimeError("已有检索评测正在运行")
+        job_id = secrets.token_hex(16)
+        request = {
+            "dataset_id": dataset_id,
+            "build_id": build_id,
+            "split": split,
+            "mode": mode,
+            "k": k,
+            "rerank": body.get("rerank") is True,
+        }
+        self._evaluation_job = {"id": job_id, "status": "running", **request}
+        threading.Thread(
+            target=self._run_evaluation,
+            args=(job_id, request),
+            daemon=True,
+            name="xifeng-retrieval-evaluation",
+        ).start()
+        return dict(self._evaluation_job)
+
+    def _run_evaluation(self, job_id: str, request: dict[str, object]) -> None:
+        try:
+            assert self._evaluation_runner is not None
+            outcome = self._evaluation_runner(request)
+            self._evaluation_job = {
+                "id": job_id,
+                "status": "succeeded",
+                **request,
+                "run_id": outcome.get("run_id"),
+            }
+        except Exception as exc:
+            self._evaluation_job = {
+                "id": job_id,
+                "status": "failed",
+                **request,
+                "error_type": type(exc).__name__,
+                "error_message": str(exc),
+            }
+        finally:
+            self._evaluation_job_lock.release()
+
+    def evaluation_job(self) -> dict[str, object]:
+        return dict(self._evaluation_job)
 
     def create_dataset(self, body: dict[str, object]) -> dict[str, object]:
         purpose = DatasetPurpose(str(body.get("purpose", "pilot")))
@@ -273,7 +388,7 @@ class EvaluationCurationApplication:
             raise RuntimeError("AI 任务运行期间不能修改或关闭工作台")
 
     def can_shutdown(self) -> bool:
-        return not self._job_lock.locked()
+        return not self._job_lock.locked() and not self._evaluation_job_lock.locked()
 
 
 class EvaluationCurationHTTPServer(ThreadingHTTPServer):
@@ -344,6 +459,20 @@ def _handler_for(application: EvaluationCurationApplication) -> type[BaseHTTPReq
                     return self._json(application.state())
                 if parsed.path == "/api/ai-job":
                     return self._json(application.job())
+                if parsed.path == "/api/evaluation-job":
+                    return self._json(application.evaluation_job())
+                if parsed.path == "/api/runs/compare":
+                    query = parse_qs(parsed.query)
+                    return self._json(
+                        application.compare_runs(
+                            query.get("baseline", [""])[0], query.get("current", [""])[0]
+                        )
+                    )
+                if parsed.path.startswith("/api/runs/"):
+                    return self._json(application.run_detail(parsed.path.rsplit("/", 1)[-1]))
+                if parsed.path.startswith("/api/datasets/") and parsed.path.endswith("/runs"):
+                    dataset_id = parsed.path.split("/")[3]
+                    return self._json(application.runs(dataset_id))
                 if parsed.path.startswith("/api/questions/"):
                     return self._json(application.document(parsed.path.rsplit("/", 1)[-1]))
                 self._json({"error": "接口不存在"}, HTTPStatus.NOT_FOUND)
@@ -375,6 +504,8 @@ def _handler_for(application: EvaluationCurationApplication) -> type[BaseHTTPReq
                     return self._json(application.disclosure(question_id))
                 if parsed.path == "/api/ai-confirm":
                     return self._json(application.confirm_ai(str(body.get("confirmation", ""))))
+                if parsed.path == "/api/evaluation-runs":
+                    return self._json(application.start_evaluation(body), HTTPStatus.ACCEPTED)
                 if parsed.path.endswith("/decision") and parsed.path.startswith("/api/proposals/"):
                     proposal_id = parsed.path.split("/")[3]
                     return self._json(
@@ -385,7 +516,7 @@ def _handler_for(application: EvaluationCurationApplication) -> type[BaseHTTPReq
                     return self._json(application.freeze(dataset_id))
                 if parsed.path == "/api/shutdown":
                     if not application.can_shutdown():
-                        raise RuntimeError("AI 任务运行期间不能关闭工作台")
+                        raise RuntimeError("后台任务运行期间不能关闭工作台")
                     self._json({"message": "评测工作台已关闭"})
                     threading.Thread(target=self.server.shutdown, daemon=True).start()
                     return
@@ -408,9 +539,12 @@ def create_evaluation_server(
 def run_evaluation_server(
     database: Database,
     codex_settings: CodexCliSettings,
+    evaluation_runner: Callable[[dict[str, object]], dict[str, object]] | None = None,
     open_browser: bool = True,
 ) -> None:
-    application = EvaluationCurationApplication(database, codex_settings)
+    application = EvaluationCurationApplication(
+        database, codex_settings, evaluation_runner=evaluation_runner
+    )
     server, url = create_evaluation_server(application)
     print(f"评测工作台：{url}")
     if open_browser and not webbrowser.open(url):

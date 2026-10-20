@@ -40,7 +40,7 @@ RAG 核心、索引、模型调用、评测与 API 使用 Python。第一阶段�
 | Reranker | 默认 `BAAI/bge-reranker-v2-m3`；后续对照 `Qwen/Qwen3-Reranker-0.6B` |
 | 上下文组装 | 自有确定性 Python 组件 + 规范 JSON |
 | CLI | Typer |
-| 本地控制台、管理、分块审核、评测策展与演示页 | Python 标准库 HTTP 服务 + 原生 HTML/CSS/JavaScript |
+| 本地控制台、管理、分块审核、评测工作台与演示页 | Python 标准库 HTTP 服务 + 原生 HTML/CSS/JavaScript |
 | API | FastAPI，阶段 2 加入 |
 | 测试与质量 | pytest + Ruff + Pyright |
 | 实验分析 | 自定义指标，按需使用 Pandas/Jupyter |
@@ -97,7 +97,7 @@ Generator 接口仍与具体服务商解耦。外部调用默认只用于交互�
 空临时目录中以 read-only、ephemeral 和 JSON Schema 约束模式运行，不加载用户配置、规则或
 MCP；它在隐私分类上仍属于外部推理，并依赖用户自己的 ChatGPT 数据控制设置。
 
-评测策展也复用同一个通用隔离 Codex CLI 客户端，默认模型为 `gpt-5.6-terra`。每次只允许
+评测工作台的题集策展视图也复用同一个通用隔离 Codex CLI 客户端，默认模型为 `gpt-5.6-terra`。每次只允许
 处理人工明确选择的一篇已索引文章；页面必须先显示问题、版本、字符数、单元数、provider、
 模型和最大请求次数，再由用户在弹窗中确认。结构化输出只生成待审候选，评测冻结与运行阶段
 不自动调用 Codex。
@@ -109,7 +109,7 @@ Windows 使用官方 Ollama standalone CLI，不安装托盘应用、不注册�
 ## 5. 前端
 
 正式前端不属于第一阶段范围。第一阶段使用 CLI 按需启动、固定绑定回环地址的项目控制台、
-语料管理、分块与细话题审核、评测策展和面试演示页面；这些页面使用 Python 标准库 HTTP
+语料管理、分块与细话题审核、评测工作台和面试演示页面；这些页面使用 Python 标准库 HTTP
 服务和原生静态资源，不增加前端构建链，也不承担通用 API 职责。核心与 API 稳定后使用
 Svelte；是否需要 SvelteKit、路由框架或 UI 组件库，到阶段 3 根据实际页面需求再决定。
 

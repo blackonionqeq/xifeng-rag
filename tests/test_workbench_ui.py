@@ -120,4 +120,27 @@ def test_workbench_command_wires_three_services(tmp_path: Path, monkeypatch) -> 
     application = captured["application"]
     assert isinstance(application, WorkbenchApplication)
     assert list(application.services) == ["demo", "corpus", "evaluation"]
+    assert application.services["evaluation"].title == "评测工作台"
     assert captured["open_browser"] is False
+
+    evaluation: dict[str, object] = {}
+
+    def fake_evaluation_application(*args, **kwargs):
+        del args
+        evaluation["runner"] = kwargs.get("evaluation_runner")
+        return object()
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), QuietHandler)
+    monkeypatch.setattr(
+        "xifeng_rag.cli.EvaluationCurationApplication", fake_evaluation_application
+    )
+    monkeypatch.setattr(
+        "xifeng_rag.cli.create_evaluation_server",
+        lambda _application: (server, "http://127.0.0.1:12345/"),
+    )
+    try:
+        running = application.services["evaluation"].factory()
+        assert callable(evaluation["runner"])
+        assert running.url == "http://127.0.0.1:12345/"
+    finally:
+        server.server_close()
