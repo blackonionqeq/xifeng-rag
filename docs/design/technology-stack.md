@@ -39,7 +39,7 @@ RAG 核心、索引、模型调用、评测与 API 使用 Python。前端延后�
 | Reranker | 默认 `BAAI/bge-reranker-v2-m3`；后续对照 `Qwen/Qwen3-Reranker-0.6B` |
 | 上下文组装 | 自有确定性 Python 组件 + 规范 JSON |
 | CLI | Typer |
-| 本地管理、分块审核与评测策展页 | Python 标准库 HTTP 服务 + 原生 HTML/CSS/JavaScript |
+| 本地管理、分块审核、评测策展与演示页 | Python 标准库 HTTP 服务 + 原生 HTML/CSS/JavaScript |
 | API | FastAPI，阶段 2 加入 |
 | 测试与质量 | pytest + Ruff + Pyright |
 | 实验分析 | 自定义指标，按需使用 Pandas/Jupyter |

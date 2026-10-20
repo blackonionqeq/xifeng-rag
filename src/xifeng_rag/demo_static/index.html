@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>西风文章研究台</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">LOCAL · EVIDENCE FIRST</p>
+          <h1>西风文章研究台</h1>
+          <p class="subtitle">从模糊记忆找到文章，从原文证据得到可核验的回答。</p>
+        </div>
+        <div class="local-badge"><span></span>本地运行</div>
+      </header>
+
+      <nav class="tabs" aria-label="功能切换">
+        <button class="tab active" data-panel="discover">找文章</button>
+        <button class="tab" data-panel="answer">问文章库</button>
+      </nav>
+
+      <main>
+        <section id="discover" class="panel active">
+          <div class="intro">
+            <p class="step">01 · DISCOVER</p>
+            <h2>记得内容，忘了出处？</h2>
+            <p>描述你记得的主题、案例或一句模糊观点，系统会从概括、关键词、细话题和原文中逐层反查。</p>
+          </div>
+          <form id="discover-form" class="query-box">
+            <textarea id="discover-query" rows="3" placeholder="例如：讲标准化工作为什么更容易被技术替代的文章"></textarea>
+            <div class="action-row">
+              <span>默认返回 5 篇相关文章</span>
+              <button type="submit" class="primary">开始找文章 <b>→</b></button>
+            </div>
+          </form>
+          <div id="discover-status" class="status" aria-live="polite"></div>
+          <div id="discover-results" class="result-list"></div>
+        </section>
+
+        <section id="answer" class="panel">
+          <div class="intro">
+            <p class="step">02 · ANSWER</p>
+            <h2>让回答回到原文</h2>
+            <p>先在本地检索并检查证据范围，确认后才把列出的少量证据发送给 Generator。</p>
+          </div>
+          <form id="answer-form" class="query-box">
+            <textarea id="answer-query" rows="3" placeholder="输入一个需要根据文章回答的问题"></textarea>
+            <div class="action-row">
+              <span>检索和证据预览不会访问外部服务</span>
+              <button type="submit" class="primary">检索证据 <b>→</b></button>
+            </div>
+          </form>
+          <div id="answer-status" class="status" aria-live="polite"></div>
+          <section id="question-history" class="question-history hidden">
+            <div class="history-heading">
+              <h3>最近问题</h3>
+              <button id="clear-history" class="text-button" type="button">全部清空</button>
+            </div>
+            <div id="question-history-list" class="history-list"></div>
+          </section>
+          <section id="disclosure" class="disclosure hidden"></section>
+          <section id="answer-result" class="answer-result hidden"></section>
+        </section>
+      </main>
+
+      <footer>
+        <span>BM25 evidence retrieval · structured generation · stable citations</span>
+        <button id="shutdown" class="text-button">关闭本地服务</button>
+      </footer>
+    </div>
+    <script src="/app.js" defer></script>
+  </body>
+</html>

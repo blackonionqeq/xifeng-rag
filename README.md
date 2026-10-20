@@ -13,6 +13,7 @@
 - **文章反查**：默认按概括、关键词、细话题和原文执行分层 `disagreement_cascade`，并保留累计文章文档 Hybrid 作为显式兼容策略；
 - **证据检索**：在已批准原文块上执行 BM25、Dense、RRF、本地 Cross-Encoder 重排，以及可选的分层检索和查询改写实验；
 - **引用回答**：按预算组装带稳定来源的证据，由用户显式触发 DeepSeek 生成结构化单轮回答；
+- **本地演示**：在同一页面完成文章反查、证据预览、外发确认、结构化回答和原文引用核验；
 - **评测实验**：人工策展并冻结题集，在固定语料快照上评估检索质量；显式确认后可运行回答
   状态、引用覆盖、延迟和失败归因的端到端评测。
 
@@ -56,6 +57,7 @@ uv run xifeng chunks review <ARTICLE_VERSION> --proposal <PROPOSAL_ID>
 uv run xifeng index build
 uv run xifeng search "要检索的问题" --mode hybrid --rerank --top-k 5
 uv run xifeng ask "要研究的问题" --mode hybrid --rerank
+uv run xifeng demo
 ```
 
 首次导入时，`corpus scan` 会显示解析后的绝对语料路径和文章数。默认扫描只导入新增文章，
@@ -68,6 +70,7 @@ uv run xifeng ask "要研究的问题" --mode hybrid --rerank
 “补充细话题”，确认单篇外发范围后生成并单独审核。
 
 完整的导入、审核、实验检索、文章反查和评测命令见 [CLI 工作流指南](docs/guides/cli-workflows.md)。DeepSeek 配置见 [Generator 快速使用](docs/guides/deepseek-generator-setup.md)，评测题编写见[评测问题与 AI 草案审核指南](docs/guides/evaluation-question-writing.md)。
+面试演示入口的边界见[本地演示入口设计](docs/specs/2026-10-20-local-demo-entry-design.md)。
 
 ## 设计文档
 

@@ -109,6 +109,23 @@ uv run xifeng search "要检索的问题" --mode hybrid --rerank --top-k 5
 
 默认索引构建和当前检索基线见[技术栈](../design/technology-stack.md)。本地重排通过 `--rerank` 显式开启；模型或推理失败时直接失败，不静默回退到 RRF。可用 `--rerank-candidate-k` 在单次搜索或评测中覆盖候选深度。
 
+## 本地演示入口
+
+```powershell
+uv run xifeng demo
+```
+
+该命令启动只监听 `127.0.0.1` 的本地页面，集中展示“找文章”和“问文章库”。找文章复用默认
+`disagreement_cascade`；问文章库固定使用当前 BM25 Top-5 回答基线。页面先在本地检索并展示
+证据范围，只有点击“确认范围并生成回答”后才创建 DeepSeek 客户端。准备结果十分钟过期且只能
+使用一次。使用 `--no-open` 可只打印地址，不自动打开浏览器。
+
+“问文章库”会把最近 50 个问题及最近使用时间保存在 `data/demo-question-history.json`，便于重复
+试题和挑选现场演示问题；相同问题自动去重，页面可以单条删除或全部清空。该文件不包含回答、
+证据、引用或完整 Prompt。
+
+本地页面可能显示付费原文引用。公开录屏、截图或部署时应使用自造短文本语料。
+
 ### 查询改写
 
 ```powershell

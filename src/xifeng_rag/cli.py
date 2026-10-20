@@ -56,6 +56,7 @@ from xifeng_rag.corpus import (
     sha256_text,
 )
 from xifeng_rag.corpus_ui import run_corpus_dashboard
+from xifeng_rag.demo_ui import DemoApplication, QuestionHistoryStore, run_demo_server
 from xifeng_rag.domain import (
     AssemblyResult,
     AssemblyStatus,
@@ -536,6 +537,87 @@ def doctor(ctx: typer.Context) -> None:
         typer.echo(f"{'OK' if ok else 'FAIL'}  {name}: {detail}")
     if not all(ok for _, ok, _ in checks):
         raise typer.Exit(1)
+
+
+@app.command("demo")
+def demo_command(
+    ctx: typer.Context,
+    no_open: Annotated[
+        bool, typer.Option("--no-open", help="只打印地址，不自动打开浏览器")
+    ] = False,
+) -> None:
+    """启动包含文章反查、证据问答和引用核验的本地演示页。"""
+    runtime = _runtime(ctx)
+    provider = None
+    try:
+        settings = runtime.settings.generator
+        if settings.provider != "deepseek":
+            raise ValueError(f"不支持的 Generator provider：{settings.provider}")
+        suite_path = runtime.settings.article_index_dir / LATEST_SUITE_FILE
+        if not suite_path.is_file():
+            raise FileNotFoundError(
+                "默认分层文章反查索引不存在，请运行 "
+                "`uv run xifeng articles build-layered-index --candidate-k 20`"
+            )
+        provider = _embedding_provider(runtime.settings)
+        build_ids = load_layered_suite(suite_path)
+
+        def article_searcher(query: str, top_k: int):
+            assert provider is not None
+            with runtime.database.session() as session:
+                outcome = search_articles_with_disagreement_cascade(
+                    session,
+                    query,
+                    top_k,
+                    embedding_provider=provider,
+                    build_ids=build_ids,
+                    fusion_rrf_k=runtime.settings.retrieval.rrf_k,
+                )
+            return outcome.results, [item.value for item in outcome.activated_layers]
+
+        def evidence_searcher(question: str, top_k: int) -> list[RetrievalCandidate]:
+            with runtime.database.session() as session:
+                return _search_with_profile(
+                    session,
+                    runtime,
+                    question,
+                    top_k,
+                    build=None,
+                    selected_mode=RetrievalMode.BM25,
+                    provider=None,
+                    reranker=None,
+                    rerank_candidate_k=runtime.settings.reranker.candidate_k,
+                    layered=False,
+                )
+
+        def generator_factory() -> EvidenceBoundGenerator:
+            api_key = os.environ.get(settings.api_key_env)
+            if not api_key:
+                raise ValueError(f"环境变量未设置：{settings.api_key_env}")
+            return EvidenceBoundGenerator(
+                DeepSeekClient(settings, api_key),
+                provider_id="deepseek",
+                model_id=settings.model,
+            )
+
+        application = DemoApplication(
+            article_searcher=article_searcher,
+            evidence_searcher=evidence_searcher,
+            generator_factory=generator_factory,
+            assembly_config=_assembly_config(runtime.settings),
+            provider_name="DeepSeek",
+            provider_url=settings.base_url,
+            model_id=settings.model,
+            question_history=QuestionHistoryStore(
+                runtime.settings.data_dir / "demo-question-history.json"
+            ),
+        )
+        run_demo_server(application, open_browser=not no_open)
+    except Exception as exc:
+        _abort(exc)
+    finally:
+        if provider is not None:
+            provider.close()
 
 
 @corpus_app.command("scan")

@@ -73,7 +73,9 @@ Contextual Retrieval，以及本地/外部 Generator 对比。HyDE、RAPTOR、�
    上下文成本决定是否调整，再显式运行 holdout。第一版采用确定性状态、引用和证据范围指标，
    不引入自动语义裁判或新的人工评分页面；设计见
    [端到端回答与引用评测设计](../specs/2026-10-19-end-to-end-answer-evaluation-design.md)。
-4. 基于扩大后的 dev 集验证证据观测信号；需要补检索时优先研究 TopicChunk 与分层结果的
+4. 本地面试演示入口已经实现，集中展示文章反查、证据披露、回答与引用核验；公开演示仍应
+   换用自造短文本语料。
+5. 基于扩大后的 dev 集验证证据观测信号；需要补检索时优先研究 TopicChunk 与分层结果的
    比较或合并，不用单一绝对阈值直接替换结果。正向证据检索的细话题召回通道
    （`eval run --subtopics`）已在 pilot 6 题上实验并得到负结果（提名父块结构整体退化，
    不默认启用），设计见[正查细话题召回通道设计](../specs/2026-09-03-subtopic-recall-channel-design.md)；
