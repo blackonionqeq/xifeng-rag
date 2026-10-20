@@ -103,6 +103,10 @@ class AnswerGenerationError(RuntimeError):
     pass
 
 
+class GeneratorProviderError(AnswerGenerationError):
+    """The external provider could not complete a request safely."""
+
+
 def _safe_validation_detail(exc: Exception) -> str:
     if isinstance(exc, json.JSONDecodeError):
         return "输出不是合法 JSON"
@@ -373,11 +377,11 @@ class DeepSeekClient:
                 500: "DeepSeek 服务内部错误（HTTP 500）",
                 503: "DeepSeek 服务暂不可用（HTTP 503）",
             }
-            raise AnswerGenerationError(
+            raise GeneratorProviderError(
                 messages.get(exc.code, f"DeepSeek API 请求失败（HTTP {exc.code}）")
             ) from exc
         except (TimeoutError, urllib.error.URLError) as exc:
-            raise AnswerGenerationError("DeepSeek API 连接失败或超时") from exc
+            raise GeneratorProviderError("DeepSeek API 连接失败或超时") from exc
         if not isinstance(result, dict):
             raise AnswerGenerationError("DeepSeek 响应不是 JSON 对象")
         return result

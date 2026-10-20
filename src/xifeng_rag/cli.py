@@ -14,6 +14,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from xifeng_rag import __version__
+from xifeng_rag.answer_evaluation import prepare_answer_batch, run_prepared_answer_batch
+from xifeng_rag.answering import answer_with_context, prepare_answer_context
 from xifeng_rag.article_evaluation import (
     compare_article_discovery_evaluations,
     load_article_discovery_dataset,
@@ -73,10 +75,8 @@ from xifeng_rag.evaluation_ui import run_evaluation_server
 from xifeng_rag.evidence_assessment import assess_evidence
 from xifeng_rag.generation import (
     AnswerGenerationResult,
-    AnswerStatus,
     DeepSeekClient,
     EvidenceBoundGenerator,
-    GeneratedAnswer,
     SupplementPolicy,
     cited_evidence,
     render_answer,
@@ -1621,16 +1621,9 @@ def ask_command(
                 candidates, runtime.settings.evidence_assessment.observation_k
             )
             _echo_evidence_assessment(assessment)
-        context = assemble_context(candidates, _assembly_config(runtime.settings))
-        if context.status == AssemblyStatus.NO_EVIDENCE:
-            result = AnswerGenerationResult(
-                answer=GeneratedAnswer(
-                    status=AnswerStatus.INSUFFICIENT_EVIDENCE,
-                    limitations=["本次检索未找到可用于回答的证据。"],
-                ),
-                request_count=0,
-            )
-        else:
+        context = prepare_answer_context(candidates, _assembly_config(runtime.settings))
+        generator = None
+        if context.status != AssemblyStatus.NO_EVIDENCE:
             settings = runtime.settings.generator
             if settings.provider != "deepseek":
                 raise ValueError(f"不支持的 Generator provider：{settings.provider}")
@@ -1651,7 +1644,7 @@ def ask_command(
                 provider_id="deepseek",
                 model_id=settings.model,
             )
-            result = generator.generate(question, context, supplement)
+        result = answer_with_context(question, context, generator, supplement=supplement)
         if as_json:
             typer.echo(_answer_json(result, context, assessment))
         else:
@@ -1696,6 +1689,130 @@ def generator_models(ctx: typer.Context) -> None:
         typer.echo("简短说明：docs/guides/deepseek-generator-setup.md")
     except Exception as exc:
         _abort(exc)
+
+
+@eval_app.command("answer-run")
+def eval_answer_run(
+    ctx: typer.Context,
+    evalset: str,
+    split: Annotated[
+        str,
+        typer.Option("--split", help="必须显式选择 dev 或 holdout；不支持 all"),
+    ],
+    k: Annotated[int, typer.Option("--k", min=1, max=100)] = 5,
+    build: Annotated[
+        str | None, typer.Option("--build", help="指定兼容冻结快照的 Index Build")
+    ] = None,
+    mode: Annotated[RetrievalMode | None, typer.Option("--mode")] = None,
+    rerank: Annotated[bool, typer.Option("--rerank", help="启用本地 Cross-Encoder 重排")] = False,
+    rerank_candidate_k: Annotated[
+        int | None,
+        typer.Option("--rerank-candidate-k", min=1, max=1000, help="覆盖重排候选深度"),
+    ] = None,
+) -> None:
+    """运行冻结题集的端到端回答与引用评测。"""
+    runtime = _runtime(ctx)
+    provider = None
+    reranker = None
+    try:
+        if split not in {"dev", "holdout"}:
+            raise ValueError("--split 必须显式指定 dev 或 holdout")
+        if rerank_candidate_k is not None and not rerank:
+            raise ValueError("--rerank-candidate-k 只能与 --rerank 一起使用")
+        selected_mode = _resolved_retrieval_mode(runtime, mode, build)
+        if rerank and selected_mode != RetrievalMode.HYBRID:
+            raise ValueError("--rerank 只支持 --mode hybrid")
+        if selected_mode in {RetrievalMode.DENSE, RetrievalMode.HYBRID}:
+            provider = _embedding_provider(runtime.settings)
+        if rerank:
+            reranker = _reranker_provider(runtime.settings)
+
+        def retrieve(session: Session, query: str) -> list[RetrievalCandidate]:
+            return _search_with_profile(
+                session,
+                runtime,
+                query,
+                k,
+                build=build,
+                selected_mode=selected_mode,
+                provider=provider,
+                reranker=reranker,
+                rerank_candidate_k=(
+                    rerank_candidate_k or runtime.settings.reranker.candidate_k
+                ),
+                layered=False,
+            )
+
+        with runtime.database.session() as session:
+            batch = prepare_answer_batch(
+                session,
+                evalset,
+                split=split,
+                mode=selected_mode,
+                k=k,
+                build_id=build,
+                retriever=retrieve,
+                assembly_config=_assembly_config(runtime.settings),
+            )
+        settings = runtime.settings.generator
+        if settings.provider != "deepseek":
+            raise ValueError(f"不支持的 Generator provider：{settings.provider}")
+        typer.echo("端到端回答评测将发送以下批次的最终入选证据：", err=True)
+        typer.echo(
+            f"  数据集：{batch.dataset_name} {batch.dataset_version} "
+            f"({batch.dataset_id})  {batch.dataset_content_hash}",
+            err=True,
+        )
+        typer.echo(f"  语料快照：{batch.corpus_snapshot}", err=True)
+        typer.echo(
+            f"  split：{batch.split}；问题：{len(batch.items)} 道（可回答 "
+            f"{batch.answerable_question_count}，不可回答 "
+            f"{len(batch.items) - batch.answerable_question_count}）",
+            err=True,
+        )
+        typer.echo(f"  服务：DeepSeek  {settings.base_url}", err=True)
+        typer.echo(f"  模型：{settings.model}", err=True)
+        for item in batch.items:
+            typer.echo(
+                f"  Q{item.ordinal}：{item.context.usage.selected_count} 块，"
+                f"原文 {item.context.usage.original_text_chars} 字符",
+                err=True,
+            )
+        typer.echo(
+            f"  合计：{batch.evidence_item_count} 块，原文 "
+            f"{batch.evidence_character_count} 字符；最大外部请求次数："
+            f"{batch.external_question_count * 2}",
+            err=True,
+        )
+        if not typer.confirm("确认运行这个固定批次？", default=False):
+            typer.echo("已取消；未调用外部 Generator。")
+            return
+        generator = None
+        if batch.external_question_count:
+            api_key = os.environ.get(settings.api_key_env)
+            if not api_key:
+                raise ValueError(f"环境变量未设置：{settings.api_key_env}")
+            generator = EvidenceBoundGenerator(
+                DeepSeekClient(settings, api_key),
+                provider_id="deepseek",
+                model_id=settings.model,
+            )
+        with runtime.database.session() as session:
+            outcome = run_prepared_answer_batch(
+                session,
+                batch,
+                generator=generator,
+                provider_id="deepseek",
+                model_id=settings.model,
+            )
+        typer.echo(json.dumps(outcome, ensure_ascii=False, indent=2))
+    except Exception as exc:
+        _abort(exc)
+    finally:
+        if reranker is not None:
+            reranker.close()
+        if provider is not None:
+            provider.close()
 
 
 @eval_app.command("run")

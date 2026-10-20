@@ -176,6 +176,17 @@ uv run xifeng eval simulate-article-fallback <LAYERED_RESULT_JSON>
 `eval curate` 启动本地评测集工作台，用于录入问题、编辑参考答案和按原子单元标注证据范围。AI 辅助候选需要在显示外发范围后由用户二次确认，且必须人工接受或修改才能成为金标准。
 
 `eval run` 只接受冻结数据集，并拒绝在不匹配的 Index Build 上运行。pilot、正式 dev/holdout 的范围和实验纪律见[版本路线](../design/roadmap.md)，具体审核标准见[评测问题编写与 AI 草案审核指南](evaluation-question-writing.md)。
+
+正式题集冻结后，可单独运行端到端回答与引用评测：
+
+```powershell
+uv run xifeng eval answer-run <FROZEN_DATASET_ID> --split dev --mode bm25 --k 5
+```
+
+该命令必须显式选择 `dev` 或 `holdout`。它先在本地完成整批检索和上下文组装，再显示每题证据
+块数、原文字符数、服务、模型与最大请求数；确认后才顺序调用 Generator。自动结果评估拒答
+状态、引用有效性、金标准证据与答案要点的引用覆盖、阶段失败和成本，不把证据覆盖称为答案
+正确率。拒绝确认时不会创建外部客户端或发送证据。
 正式 benchmark 在开发阶段必须使用 `--split dev`；只有最终评估时才运行 `--split holdout`。
 
 `--subtopics` 在常规 Hybrid+Rerank 之上叠加细话题召回通道：问题命中已批准细话题后提名其父

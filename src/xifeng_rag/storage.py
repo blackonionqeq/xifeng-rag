@@ -216,6 +216,47 @@ class EvaluationRunRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class AnswerEvaluationRunRow(Base):
+    __tablename__ = "answer_evaluation_runs"
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    dataset_id: Mapped[str] = mapped_column(ForeignKey("evaluation_datasets.id"), index=True)
+    build_id: Mapped[str] = mapped_column(ForeignKey("index_builds.id"), index=True)
+    dataset_content_hash: Mapped[str] = mapped_column(String(64))
+    corpus_snapshot: Mapped[str] = mapped_column(String(64))
+    split: Mapped[str] = mapped_column(String(20), index=True)
+    retrieval_mode: Mapped[str] = mapped_column(String(20))
+    k: Mapped[int] = mapped_column(Integer)
+    provider_id: Mapped[str] = mapped_column(Text)
+    model_id: Mapped[str] = mapped_column(Text)
+    supplement_policy: Mapped[str] = mapped_column(String(20))
+    status: Mapped[str] = mapped_column(String(40), index=True)
+    metrics_json: Mapped[str] = mapped_column(Text, default="{}")
+    error_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+    code_commit: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    worktree_dirty: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AnswerEvaluationItemRow(Base):
+    __tablename__ = "answer_evaluation_items"
+    id: Mapped[str] = mapped_column(String(120), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("answer_evaluation_runs.id"), index=True)
+    question_id: Mapped[str] = mapped_column(ForeignKey("evaluation_questions.id"), index=True)
+    ordinal: Mapped[int] = mapped_column(Integer)
+    answerable: Mapped[bool] = mapped_column(Boolean)
+    status: Mapped[str] = mapped_column(String(40), index=True)
+    answer_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    citations_json: Mapped[str] = mapped_column(Text, default="[]")
+    metrics_json: Mapped[str] = mapped_column(Text, default="{}")
+    failure_labels_json: Mapped[str] = mapped_column(Text, default="[]")
+    request_count: Mapped[int] = mapped_column(Integer, default=0)
+    latency_ms: Mapped[float] = mapped_column(Float, default=0.0)
+    usage_json: Mapped[str] = mapped_column(Text, default="{}")
+    error_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class EvaluationDatasetRow(Base):
     __tablename__ = "evaluation_datasets"
     id: Mapped[str] = mapped_column(String(96), primary_key=True)

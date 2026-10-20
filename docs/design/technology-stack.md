@@ -87,7 +87,10 @@ DeepSeek API 使用 OpenAI 兼容的 Chat Completions 形式。API 密钥从进�
 修复，不启用隐藏的 SDK 自动重试或 provider 回退。用户可见 Markdown 与原文来源由本地程序
 确定性渲染；没有证据时不调用 API。
 
-Generator 接口仍与具体服务商解耦。外部调用默认只用于交互式答案生成；语义分块仅允许通过单篇 `chunks retry`、逐次二次确认和本地审核校验使用外部 OpenAI-compatible profile，仍禁止批量外部分块和外部 Contextual Retrieval。
+Generator 接口仍与具体服务商解耦。外部调用默认只用于交互式答案生成，以及用户显式选择
+冻结 split、查看实际证据外发范围并确认后的端到端回答评测；语义分块仅允许通过单篇
+`chunks retry`、逐次二次确认和本地审核校验使用外部 OpenAI-compatible profile，仍禁止批量
+外部分块和外部 Contextual Retrieval。
 
 个人用户可选 `codex-cli` 作为单篇分块 provider，复用现有 ChatGPT 登录额度。该子进程只在
 空临时目录中以 read-only、ephemeral 和 JSON Schema 约束模式运行，不加载用户配置、规则或
