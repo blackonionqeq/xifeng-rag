@@ -220,7 +220,11 @@ def test_demo_http_server_serves_static_and_protects_api() -> None:
     base_url = url.split("/?", 1)[0]
     try:
         with urllib.request.urlopen(url, timeout=5) as response:
-            assert "西风文章研究台" in response.read().decode()
+            page = response.read().decode()
+            assert "西风文章研究台" in page
+            assert "候选文章" in page
+            assert "DeepSeek 生成" in page
+            assert "检查证据范围" in page
 
         unauthorized = urllib.request.Request(
             f"{base_url}/api/answers/prepare",

@@ -29,6 +29,22 @@
             <h2>记得内容，忘了出处？</h2>
             <p>描述你记得的主题、案例或一句模糊观点，系统会从概括、关键词、细话题和原文中逐层反查。</p>
           </div>
+          <div id="discover-flow" class="process-flow" aria-label="文章反查流程">
+            <div class="flow-step active" data-stage="input">
+              <span class="flow-index">1</span><span class="flow-badge local">本地</span>
+              <strong>描述模糊记忆</strong><small>主题、案例或观点</small>
+            </div>
+            <span class="flow-arrow" aria-hidden="true">→</span>
+            <div class="flow-step" data-stage="retrieval">
+              <span class="flow-index">2</span><span class="flow-badge local">本地</span>
+              <strong>逐层反查</strong><small>概括 → 关键词 → 细话题 → 原文</small>
+            </div>
+            <span class="flow-arrow" aria-hidden="true">→</span>
+            <div class="flow-step" data-stage="results">
+              <span class="flow-index">3</span><span class="flow-badge local">本地</span>
+              <strong>候选文章</strong><small>返回 5 篇，不实时生成</small>
+            </div>
+          </div>
           <form id="discover-form" class="query-box">
             <textarea id="discover-query" rows="3" placeholder="例如：讲标准化工作为什么更容易被技术替代的文章"></textarea>
             <div class="action-row">
@@ -45,6 +61,32 @@
             <p class="step">02 · ANSWER</p>
             <h2>让回答回到原文</h2>
             <p>先在本地检索并检查证据范围，确认后才把列出的少量证据发送给 Generator。</p>
+          </div>
+          <div id="answer-flow" class="process-flow answer-flow" aria-label="文章库问答流程">
+            <div class="flow-step active" data-stage="input">
+              <span class="flow-index">1</span><span class="flow-badge local">本地</span>
+              <strong>输入问题</strong><small>明确想了解的内容</small>
+            </div>
+            <span class="flow-arrow" aria-hidden="true">→</span>
+            <div class="flow-step" data-stage="retrieval">
+              <span class="flow-index">2</span><span class="flow-badge local">本地</span>
+              <strong>检索原文</strong><small>BM25 Top-5</small>
+            </div>
+            <span class="flow-arrow" aria-hidden="true">→</span>
+            <div class="flow-step consent" data-stage="confirm">
+              <span class="flow-index">3</span><span class="flow-badge consent">确认</span>
+              <strong>检查证据范围</strong><small>明确内容与请求数</small>
+            </div>
+            <span class="flow-arrow" aria-hidden="true">→</span>
+            <div class="flow-step external" data-stage="generate">
+              <span class="flow-index">4</span><span class="flow-badge external">外部</span>
+              <strong>DeepSeek 生成</strong><small>无证据时本地拒答</small>
+            </div>
+            <span class="flow-arrow" aria-hidden="true">→</span>
+            <div class="flow-step" data-stage="result">
+              <span class="flow-index">5</span><span class="flow-badge local">本地</span>
+              <strong>查看回答</strong><small>展开引用核对原文</small>
+            </div>
           </div>
           <form id="answer-form" class="query-box">
             <textarea id="answer-query" rows="3" placeholder="输入一个需要根据文章回答的问题"></textarea>

@@ -31,6 +31,15 @@ function setStatus(id, text, error = false) {
   node.classList.toggle("error", error);
 }
 
+function setFlowStage(flowId, stage) {
+  const steps = [...document.querySelectorAll(`#${flowId} .flow-step`)];
+  const activeIndex = steps.findIndex(step => step.dataset.stage === stage);
+  steps.forEach((step, index) => {
+    step.classList.toggle("active", index === activeIndex);
+    step.classList.toggle("done", index < activeIndex);
+  });
+}
+
 function renderQuestionHistory(items) {
   questionHistory = items;
   const section = document.getElementById("question-history");
@@ -47,6 +56,7 @@ function renderQuestionHistory(items) {
       const input = document.getElementById("answer-query");
       input.value = question;
       input.focus();
+      setFlowStage("answer-flow", "input");
     });
   });
   list.querySelectorAll(".history-delete").forEach(button => {
@@ -85,11 +95,13 @@ document.getElementById("discover-form").addEventListener("submit", async event 
   const query = document.getElementById("discover-query").value.trim();
   if (!query) return setStatus("discover-status", "请先描述你记得的内容。", true);
   setBusy(form, true);
+  setFlowStage("discover-flow", "retrieval");
   setStatus("discover-status", "正在从文章概括开始逐层反查…");
   document.getElementById("discover-results").innerHTML = "";
   try {
     const data = await api("/api/articles/search", { query, top_k: 5 });
     const layers = data.activated_layers.join(" → ") || "overview";
+    setFlowStage("discover-flow", "results");
     setStatus("discover-status", `找到 ${data.results.length} 篇候选 · 实际触发层：${layers}`);
     document.getElementById("discover-results").innerHTML = data.results.map((item, index) => `
       <article class="article-card">
@@ -109,6 +121,7 @@ document.getElementById("discover-form").addEventListener("submit", async event 
         </div>
       </article>`).join("") || `<p>没有找到相关文章。</p>`;
   } catch (error) {
+    setFlowStage("discover-flow", "input");
     setStatus("discover-status", error.message, true);
   } finally {
     setBusy(form, false);
@@ -121,6 +134,7 @@ document.getElementById("answer-form").addEventListener("submit", async event =>
   const question = document.getElementById("answer-query").value.trim();
   if (!question) return setStatus("answer-status", "请先输入问题。", true);
   setBusy(form, true);
+  setFlowStage("answer-flow", "retrieval");
   setStatus("answer-status", "正在本地检索并组装证据…");
   document.getElementById("disclosure").classList.add("hidden");
   document.getElementById("answer-result").classList.add("hidden");
@@ -128,8 +142,10 @@ document.getElementById("answer-form").addEventListener("submit", async event =>
     const data = await api("/api/answers/prepare", { question });
     await loadQuestionHistory();
     renderDisclosure(data);
+    setFlowStage("answer-flow", "confirm");
     setStatus("answer-status", data.evidence_count ? "证据准备完成，请检查外发范围。" : "没有检索到证据，将在本地拒答。");
   } catch (error) {
+    setFlowStage("answer-flow", "input");
     setStatus("answer-status", error.message, true);
   } finally {
     setBusy(form, false);
@@ -163,13 +179,16 @@ function renderDisclosure(data) {
 async function confirmAnswer(preparedId, button) {
   button.disabled = true;
   button.textContent = "正在生成…";
+  setFlowStage("answer-flow", "generate");
   setStatus("answer-status", "正在生成结构化回答，请稍候…");
   try {
     const data = await api("/api/answers/confirm", { prepared_id: preparedId });
     renderAnswer(data);
+    setFlowStage("answer-flow", "result");
     document.getElementById("disclosure").classList.add("hidden");
     setStatus("answer-status", "回答完成。点击引用可核对本地原文。" );
   } catch (error) {
+    setFlowStage("answer-flow", "input");
     setStatus("answer-status", error.message, true);
     button.disabled = false;
     button.textContent = "准备结果已失效，请重新检索";
