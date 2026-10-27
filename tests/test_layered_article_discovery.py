@@ -52,6 +52,9 @@ from xifeng_rag.storage import (
 class LayerEmbeddingProvider:
     dimension = 4
 
+    def __init__(self) -> None:
+        self.document_batches: list[list[str]] = []
+
     @property
     def metadata(self) -> dict[str, object]:
         return {
@@ -74,6 +77,7 @@ class LayerEmbeddingProvider:
         return (vector / np.linalg.norm(vector)).tolist()
 
     def encode_documents(self, texts: list[str]) -> np.ndarray:
+        self.document_batches.append(list(texts))
         return np.asarray([self._vector(text) for text in texts], dtype=np.float32)
 
     def encode_queries(self, texts: list[str]) -> np.ndarray:
@@ -544,3 +548,219 @@ def test_layered_build_evaluation_is_safe_and_supports_offline_fallback(
     baseline_mrr = result.channels[0].metrics.mrr
     assert baseline_mrr is not None
     assert comparison.channels[0].metrics["mrr"].delta == -baseline_mrr
+
+
+def test_layered_rebuild_reuses_unchanged_layers_and_unit_embeddings(
+    database: Database,
+    tmp_path: Path,
+    layered_articles: tuple[str, str],
+) -> None:
+    provider = LayerEmbeddingProvider()
+    index_root = tmp_path / "article-indexes"
+    with database.session() as session:
+        first = build_layered_article_indexes(
+            session,
+            index_root,
+            provider,
+            candidate_k=20,
+            target_chars=5,
+            max_chars=20,
+            tail_merge_chars=0,
+        )
+
+    provider.document_batches.clear()
+    with database.session() as session:
+        overview = session.get(ArticleOverviewRow, "layer-overview-1")
+        assert overview is not None
+        overview.article_summary = "更新后的概括：社会阶段改变个人参照。"
+
+    with database.session() as session:
+        second = build_layered_article_indexes(
+            session,
+            index_root,
+            provider,
+            candidate_k=20,
+            target_chars=5,
+            max_chars=20,
+            tail_merge_chars=0,
+        )
+
+    assert (
+        second.builds[ArticleDiscoveryLayer.OVERVIEW].build_id
+        != first.builds[ArticleDiscoveryLayer.OVERVIEW].build_id
+    )
+    for layer in (
+        ArticleDiscoveryLayer.KEYWORDS,
+        ArticleDiscoveryLayer.SUBTOPICS,
+        ArticleDiscoveryLayer.ORIGINAL,
+    ):
+        assert second.builds[layer].build_id == first.builds[layer].build_id
+
+    overview_build = second.builds[ArticleDiscoveryLayer.OVERVIEW]
+    assert overview_build.reused_embedding_count == 1
+    assert overview_build.encoded_embedding_count == 1
+    assert [len(batch) for batch in provider.document_batches] == [1]
+    metadata = json.loads(
+        overview_build.path.joinpath("metadata.json").read_text(encoding="utf-8")
+    )
+    assert metadata["snapshot_scope"] == "layer"
+    assert metadata["reused_embedding_count"] == 1
+    assert metadata["encoded_embedding_count"] == 1
+    with database.session() as session:
+        search = search_articles_with_disagreement_cascade(
+            session,
+            "社会阶段",
+            2,
+            embedding_provider=provider,
+            build_ids=load_layered_suite(index_root / "latest-layered-suite.json"),
+        )
+    assert search.corpus_snapshot == second.corpus_snapshot
+
+
+def test_layered_rebuild_encodes_only_units_from_new_article(
+    database: Database,
+    tmp_path: Path,
+    layered_articles: tuple[str, str],
+) -> None:
+    provider = LayerEmbeddingProvider()
+    index_root = tmp_path / "article-indexes"
+    with database.session() as session:
+        first = build_layered_article_indexes(
+            session,
+            index_root,
+            provider,
+            target_chars=5,
+            max_chars=20,
+            tail_merge_chars=0,
+        )
+
+    _add_layered_article(
+        database,
+        3,
+        title="新增文章",
+        summary="新增文章概括。",
+        topic_title="新增话题",
+        keyword="新增关键词",
+        paragraphs=["新增原文案例。"],
+        subtopics=[
+            {
+                "title": "新增细话题",
+                "start_unit": 1,
+                "end_unit": 1,
+                "summary": "新增细话题概括。",
+            }
+        ],
+    )
+    provider.document_batches.clear()
+    with database.session() as session:
+        second = build_layered_article_indexes(
+            session,
+            index_root,
+            provider,
+            target_chars=5,
+            max_chars=20,
+            tail_merge_chars=0,
+        )
+
+    assert [len(batch) for batch in provider.document_batches] == [1, 1, 1, 1]
+    for layer in ArticleDiscoveryLayer:
+        assert second.builds[layer].build_id != first.builds[layer].build_id
+        assert (
+            second.builds[layer].reused_embedding_count
+            == first.builds[layer].unit_count
+        )
+        assert second.builds[layer].encoded_embedding_count == 1
+
+
+def test_layered_rebuild_removes_inactive_article_without_reencoding(
+    database: Database,
+    tmp_path: Path,
+    layered_articles: tuple[str, str],
+) -> None:
+    first_article, _ = layered_articles
+    provider = LayerEmbeddingProvider()
+    index_root = tmp_path / "article-indexes"
+    with database.session() as session:
+        first = build_layered_article_indexes(
+            session,
+            index_root,
+            provider,
+            target_chars=5,
+            max_chars=20,
+            tail_merge_chars=0,
+        )
+    with database.session() as session:
+        article = session.get(ArticleRow, first_article)
+        assert article is not None
+        article.active = False
+
+    provider.document_batches.clear()
+    with database.session() as session:
+        second = build_layered_article_indexes(
+            session,
+            index_root,
+            provider,
+            target_chars=5,
+            max_chars=20,
+            tail_merge_chars=0,
+        )
+
+    assert provider.document_batches == []
+    for layer in ArticleDiscoveryLayer:
+        assert second.builds[layer].build_id != first.builds[layer].build_id
+        assert second.builds[layer].encoded_embedding_count == 0
+    assert second.builds[ArticleDiscoveryLayer.SUBTOPICS].unit_count == 0
+
+
+def test_failed_incremental_layer_does_not_publish_partial_suite(
+    database: Database,
+    tmp_path: Path,
+    layered_articles: tuple[str, str],
+) -> None:
+    class FailingKeywordProvider(LayerEmbeddingProvider):
+        def encode_documents(self, texts: list[str]) -> np.ndarray:
+            if any("新增关键词" in text for text in texts):
+                raise RuntimeError("keyword embedding failed")
+            return super().encode_documents(texts)
+
+    provider = FailingKeywordProvider()
+    index_root = tmp_path / "article-indexes"
+    with database.session() as session:
+        first = build_layered_article_indexes(
+            session,
+            index_root,
+            provider,
+            target_chars=5,
+            max_chars=20,
+            tail_merge_chars=0,
+        )
+    latest_path = index_root / "latest-layered-suite.json"
+    published_before = latest_path.read_bytes()
+
+    _add_layered_article(
+        database,
+        3,
+        title="新增文章",
+        summary="新增文章概括。",
+        topic_title="新增话题",
+        keyword="新增关键词",
+        paragraphs=["新增原文案例。"],
+        subtopics=[],
+    )
+    with (
+        pytest.raises(RuntimeError, match="keyword embedding failed"),
+        database.session() as session,
+    ):
+        build_layered_article_indexes(
+            session,
+            index_root,
+            provider,
+            target_chars=5,
+            max_chars=20,
+            tail_merge_chars=0,
+        )
+
+    assert latest_path.read_bytes() == published_before
+    assert set(path.name for path in index_root.iterdir() if path.is_dir()) == {
+        outcome.build_id for outcome in first.builds.values()
+    }

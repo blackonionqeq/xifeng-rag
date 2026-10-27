@@ -101,6 +101,8 @@ class LayerBuildOutcome:
     article_count: int
     path: Path
     duration_ms: int
+    reused_embedding_count: int
+    encoded_embedding_count: int
 
 
 @dataclass(frozen=True)
@@ -310,11 +312,29 @@ def selected_layer_units(
 def corpus_snapshot_for_units(
     units_by_layer: dict[ArticleDiscoveryLayer, list[ArticleLayerUnit]],
 ) -> str:
+    return corpus_snapshot_for_unit_ids(
+        {
+            layer: [unit.unit_id for unit in units_by_layer[layer]]
+            for layer in ArticleDiscoveryLayer
+        }
+    )
+
+
+def corpus_snapshot_for_unit_ids(
+    unit_ids_by_layer: dict[ArticleDiscoveryLayer, list[str]],
+) -> str:
     semantic = [
-        f"{layer.value}:{unit.unit_id}"
+        f"{layer.value}:{unit_id}"
         for layer in ArticleDiscoveryLayer
-        for unit in units_by_layer[layer]
+        for unit_id in sorted(unit_ids_by_layer[layer])
     ]
+    return hashlib.sha256("\n".join(semantic).encode("utf-8")).hexdigest()
+
+
+def layer_snapshot_for_units(
+    layer: ArticleDiscoveryLayer, units: list[ArticleLayerUnit]
+) -> str:
+    semantic = [f"{layer.value}:{unit.unit_id}" for unit in units]
     return hashlib.sha256("\n".join(semantic).encode("utf-8")).hexdigest()
 
 
@@ -351,6 +371,61 @@ def _profile_id(
 
 def _point_id(unit_id: str) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"xifeng-rag:article-layer:{unit_id}"))
+
+
+def _load_reusable_vectors(
+    session: Session,
+    profile_id: str,
+    unit_ids: list[str],
+    dimension: int,
+) -> dict[str, np.ndarray]:
+    needed = set(unit_ids)
+    reused: dict[str, np.ndarray] = {}
+    rows = list(
+        session.scalars(
+            select(ArticleIndexBuildRow)
+            .where(
+                ArticleIndexBuildRow.profile_id == profile_id,
+                ArticleIndexBuildRow.status.in_(
+                    [
+                        BuildStatus.READY.value,
+                        BuildStatus.ACTIVE.value,
+                        BuildStatus.SUPERSEDED.value,
+                    ]
+                ),
+            )
+            .order_by(ArticleIndexBuildRow.created_at.desc())
+        ).all()
+    )
+    for row in rows:
+        qdrant_path = Path(row.path) / "qdrant"
+        if not qdrant_path.is_dir() or not needed:
+            continue
+        client = QdrantClient(path=str(qdrant_path))
+        try:
+            requested = sorted(needed)
+            for offset in range(0, len(requested), 256):
+                points = client.retrieve(
+                    collection_name=COLLECTION,
+                    ids=[
+                        _point_id(unit_id)
+                        for unit_id in requested[offset : offset + 256]
+                    ],
+                    with_payload=True,
+                    with_vectors=True,
+                )
+                for point in points:
+                    payload = point.payload or {}
+                    unit_id = payload.get("unit_id")
+                    if not isinstance(unit_id, str) or unit_id not in needed:
+                        continue
+                    vector = np.asarray(point.vector, dtype=np.float32)
+                    if vector.shape == (dimension,) and np.isfinite(vector).all():
+                        reused[unit_id] = vector
+                        needed.remove(unit_id)
+        finally:
+            client.close()
+    return reused
 
 
 def _build_layer(
@@ -392,6 +467,8 @@ def _build_layer(
             len({item.article_id for item in units}),
             final_path,
             existing.duration_ms or 0,
+            len(units),
+            0,
         )
 
     index_root.mkdir(parents=True, exist_ok=True)
@@ -408,6 +485,8 @@ def _build_layer(
     session.flush()
     client: QdrantClient | None = None
     try:
+        reusable_vectors: dict[str, np.ndarray] = {}
+        encoded_vectors: dict[str, np.ndarray] = {}
         if units:
             corpus = [{"unit_id": item.unit_id} for item in units]
             retriever = bm25s.BM25(corpus=corpus)
@@ -417,8 +496,39 @@ def _build_layer(
                 show_progress=False,
             )
             retriever.save(temporary / "bm25", corpus=corpus)
+            unit_ids = [item.unit_id for item in units]
+            reusable_vectors = _load_reusable_vectors(
+                session, profile_id, unit_ids, provider.dimension
+            )
+            missing_indexes = [
+                index
+                for index, unit_id in enumerate(unit_ids)
+                if unit_id not in reusable_vectors
+            ]
+            if missing_indexes:
+                new_vectors = np.asarray(
+                    provider.encode_documents(
+                        [units[index].search_text for index in missing_indexes]
+                    ),
+                    dtype=np.float32,
+                )
+                if new_vectors.shape != (len(missing_indexes), provider.dimension):
+                    raise ValueError(
+                        "Embedding 输出形状错误："
+                        f"期望 {(len(missing_indexes), provider.dimension)}，"
+                        f"实际 {new_vectors.shape}"
+                    )
+                encoded_vectors = {
+                    unit_ids[index]: vector
+                    for index, vector in zip(
+                        missing_indexes, new_vectors, strict=True
+                    )
+                }
             vectors = np.asarray(
-                provider.encode_documents([item.search_text for item in units]),
+                [
+                    reusable_vectors.get(unit_id, encoded_vectors.get(unit_id))
+                    for unit_id in unit_ids
+                ],
                 dtype=np.float32,
             )
             if vectors.shape != (len(units), provider.dimension):
@@ -463,6 +573,9 @@ def _build_layer(
             "unit_count": len(units),
             "article_count": len({item.article_id for item in units}),
             "candidate_k": candidate_k,
+            "snapshot_scope": "layer",
+            "reused_embedding_count": len(reusable_vectors),
+            "encoded_embedding_count": len(encoded_vectors),
             "embedding": provider.metadata,
             "splitter": (
                 {
@@ -495,6 +608,8 @@ def _build_layer(
             len({item.article_id for item in units}),
             final_path,
             duration_ms,
+            len(reusable_vectors),
+            len(encoded_vectors),
         )
     except Exception as exc:
         if client is not None:
@@ -529,6 +644,10 @@ def build_layered_article_indexes(
     if not units_by_layer[ArticleDiscoveryLayer.OVERVIEW]:
         raise ValueError("没有带已批准文章概括的活动文章，拒绝建立空分层文章索引")
     snapshot = corpus_snapshot_for_units(units_by_layer)
+    layer_snapshots = {
+        layer: layer_snapshot_for_units(layer, units_by_layer[layer])
+        for layer in ArticleDiscoveryLayer
+    }
     outcomes: dict[ArticleDiscoveryLayer, LayerBuildOutcome] = {}
     created_paths: list[Path] = []
     try:
@@ -543,7 +662,10 @@ def build_layered_article_indexes(
                 tail_merge_chars=tail_merge_chars,
             )
             expected_path = index_root / stable_id(
-                "layered-article-index", profile_id, snapshot, length=32
+                "layered-article-index",
+                profile_id,
+                layer_snapshots[layer],
+                length=32,
             )
             path_existed = expected_path.exists()
             outcomes[layer] = _build_layer(
@@ -552,7 +674,7 @@ def build_layered_article_indexes(
                 provider,
                 layer,
                 units_by_layer[layer],
-                snapshot,
+                layer_snapshots[layer],
                 candidate_k=candidate_k,
                 splitter_version=splitter_version,
                 target_chars=target_chars,
@@ -580,8 +702,11 @@ def build_layered_article_indexes(
             layer.value: {
                 "build_id": outcome.build_id,
                 "profile_id": outcome.profile_id,
+                "corpus_snapshot": outcome.corpus_snapshot,
                 "unit_count": outcome.unit_count,
                 "article_count": outcome.article_count,
+                "reused_embedding_count": outcome.reused_embedding_count,
+                "encoded_embedding_count": outcome.encoded_embedding_count,
             }
             for layer, outcome in outcomes.items()
         },
@@ -878,20 +1003,26 @@ def _validate_online_suite(
     missing = set(ArticleDiscoveryLayer) - set(build_ids)
     if missing:
         raise ValueError("缺少分层 Build：" + ", ".join(sorted(item.value for item in missing)))
-    snapshots: set[str] = set()
     candidate_depths: set[int] = set()
     splitter: dict[str, object] | None = None
+    build_unit_ids: dict[ArticleDiscoveryLayer, list[str]] = {}
     for layer in ArticleDiscoveryLayer:
-        build, metadata, _ = _load_build(session, build_ids[layer], layer)
-        snapshots.add(build.corpus_snapshot)
+        build, metadata, units = _load_build(session, build_ids[layer], layer)
+        build_unit_ids[layer] = sorted(units)
+        if metadata.get("snapshot_scope") == "layer":
+            expected_layer_snapshot = hashlib.sha256(
+                "\n".join(
+                    f"{layer.value}:{unit_id}" for unit_id in sorted(units)
+                ).encode("utf-8")
+            ).hexdigest()
+            if build.corpus_snapshot != expected_layer_snapshot:
+                raise ValueError(f"{layer.value} 层 Build 快照与单元清单不一致")
         candidate_depths.add(int(str(metadata.get("candidate_k"))))
         if metadata.get("embedding") != provider.metadata:
             raise ValueError(f"{layer.value} 层 Embedding Profile 与当前配置不一致")
         if layer == ArticleDiscoveryLayer.ORIGINAL:
             raw_splitter = metadata.get("splitter")
             splitter = raw_splitter if isinstance(raw_splitter, dict) else None
-    if len(snapshots) != 1:
-        raise ValueError("分层 Build 的语料快照不一致")
     if len(candidate_depths) != 1:
         raise ValueError("分层 Build 的候选深度不一致")
     if splitter is None:
@@ -903,10 +1034,13 @@ def _validate_online_suite(
         max_chars=int(str(splitter["max_chars"])),
         tail_merge_chars=int(str(splitter["tail_merge_chars"])),
     )
-    snapshot = next(iter(snapshots))
-    if corpus_snapshot_for_units(current_units) != snapshot:
+    current_unit_ids = {
+        layer: sorted(unit.unit_id for unit in current_units[layer])
+        for layer in ArticleDiscoveryLayer
+    }
+    if current_unit_ids != build_unit_ids:
         raise ValueError("最新分层套件与当前已批准文章状态不一致")
-    return snapshot, next(iter(candidate_depths))
+    return corpus_snapshot_for_unit_ids(build_unit_ids), next(iter(candidate_depths))
 
 
 def search_articles_with_disagreement_cascade(

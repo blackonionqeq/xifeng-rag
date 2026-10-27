@@ -23,6 +23,7 @@ from xifeng_rag.layered_article_search import (
     ArticleAggregation,
     ArticleDiscoveryLayer,
     article_rank_fusion,
+    corpus_snapshot_for_unit_ids,
     is_layer_clear,
     search_article_layer,
 )
@@ -203,7 +204,7 @@ def run_layered_article_evaluation(
     if missing:
         raise ValueError("缺少分层 Build：" + ", ".join(sorted(item.value for item in missing)))
     channels: list[LayeredChannelResult] = []
-    snapshots: set[str] = set()
+    unit_ids_by_layer: dict[ArticleDiscoveryLayer, list[str]] = {}
     embeddings: list[dict[str, object]] = []
     splitter: dict[str, object] | None = None
     for layer in ArticleDiscoveryLayer:
@@ -212,6 +213,9 @@ def run_layered_article_evaluation(
                 questions: list[LayeredQuestionResult] = []
                 channel_metadata: dict[str, object] | None = None
                 safe_units = _all_safe_units(session, build_ids[layer], layer)
+                unit_ids_by_layer[layer] = sorted(
+                    str(item["unit_id"]) for item in safe_units
+                )
                 available_unit_counts: dict[str, int] = defaultdict(int)
                 for item in safe_units:
                     available_unit_counts[str(item["article_id"])] += 1
@@ -331,7 +335,6 @@ def run_layered_article_evaluation(
                     )
                 if channel_metadata is None:
                     raise ValueError("文章反查评测集没有确认题")
-                snapshots.add(str(channel_metadata["corpus_snapshot"]))
                 embedding = channel_metadata.get("embedding")
                 if isinstance(embedding, dict):
                     embeddings.append(embedding)
@@ -352,14 +355,12 @@ def run_layered_article_evaluation(
                         questions=questions,
                     )
                 )
-    if len(snapshots) != 1:
-        raise ValueError("分层 Build 的语料快照不一致，拒绝评测")
     if embeddings and any(item != embeddings[0] for item in embeddings[1:]):
         raise ValueError("分层 Build 的 Embedding 配置不一致，拒绝单变量比较")
     _add_cross_mode_signals(channels, evaluation_k)
     created_at = datetime.now(UTC)
     commit, dirty = _git_state()
-    snapshot = next(iter(snapshots))
+    snapshot = corpus_snapshot_for_unit_ids(unit_ids_by_layer)
     run_id = stable_id(
         "layered-article-evaluation",
         dataset.content_hash,

@@ -1567,7 +1567,8 @@ def articles_build_layered_index(
         for layer, outcome in suite.builds.items():
             typer.echo(
                 f"{layer.value}: Build={outcome.build_id}  单元={outcome.unit_count}  "
-                f"文章={outcome.article_count}  {outcome.duration_ms}ms"
+                f"文章={outcome.article_count}  向量复用={outcome.reused_embedding_count}  "
+                f"新编码={outcome.encoded_embedding_count}  {outcome.duration_ms}ms"
             )
         typer.echo(f"套件清单：{suite.manifest_path}")
     except Exception as exc:

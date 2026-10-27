@@ -251,7 +251,9 @@ Hit@1/3/5、MRR、延迟与不在 Build 中的目标文章数，并把不含正�
 
 `articles build-layered-index` 为概括、关键词、已批准细话题和批准范围内的原文分别创建独立、
 默认不激活的 BM25 + Dense Build，并原子发布一份套件清单；候选深度属于 Profile，评测时必须
-保持一致。`eval layered-article-discovery` 默认读取最新套件，在概括/关键词层运行 `best_unit`，
+保持一致。重复构建时，未变化层直接复用既有 Build；变化层全量重建 BM25，并按稳定单元 ID
+复用相同 Profile 的历史 Dense 向量。命令输出每层的向量复用数和新编码数。`eval
+layered-article-discovery` 默认读取最新套件，在概括/关键词层运行 `best_unit`，
 在细话题/原文层同时运行 `best_unit` 与最多三个单元的 `top_n_rank_fusion`，报告各层
 Hit@1/3/5、MRR、延迟、目标不可用数、双路一致性和按单元数分组的结果。持久化记录只包含
 稳定 ID、标题、父话题和范围，不包含正文、完整概括或细话题集合。
