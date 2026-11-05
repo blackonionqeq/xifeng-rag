@@ -115,6 +115,9 @@ def test_embedding_cache_path_and_retrieval_defaults(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     settings = load_settings(config)
+    assert settings.corpus.source_dir == Path("../xifeng-rag-private-corpus/saved_articles")
+    assert settings.ollama.executable == Path("tools/ollama/ollama.exe")
+    assert settings.ollama.model_dir == Path("models/ollama")
     assert settings.embedding_cache_dir == (tmp_path / "models/huggingface").resolve()
     assert settings.embedding.model_id == "BAAI/bge-base-zh-v1.5"
     assert settings.retrieval.bm25_candidate_k == 5

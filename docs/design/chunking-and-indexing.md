@@ -5,7 +5,7 @@ Profile 存在，不改变批准边界。少数单篇文章允许显式确认后
 
 ## 1. 规范语料
 
-- 当前语料根目录为 `../test-reverse-wechat-official-accounts-paid-article/saved_articles`，由新项目根目录解析。
+- 示例语料根目录为 `../xifeng-rag-private-corpus/saved_articles`，由项目根目录解析；实际位置通过本地配置覆盖。
 - 实际路径通过 `corpus.source_dir` 配置；启动时记录解析后的绝对路径和文章数量。
 - 源目录只读，任何清洗、分块或索引过程都不得修改原始 Markdown。
 - 只索引 `saved_articles/*.md`。
@@ -261,8 +261,8 @@ model: qwen3:4b-instruct-2507-q4_K_M
 context_window: 32768
 output: JSON Schema constrained
 validation: Pydantic + coverage validators
-ollama_home: D:\ai-tools\ollama
-model_store: D:\ai-models\ollama
+ollama_home: <local-ollama-directory>
+model_store: <local-model-directory>
 ```
 
 Ollama 只作为按需启动的本地离线预处理器，不注册为项目的交互式 Generator。项目通过一个窄的本地结构化生成边界调用它，不建设通用模型服务抽象。模型输出失败、Schema 不合法或覆盖校验失败时允许有限次数重试；仍失败则保留诊断信息并进入人工处理状态，不自动建立索引。

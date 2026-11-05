@@ -30,7 +30,7 @@
 语料位于本项目之外。当前开发环境使用：
 
 ```text
-../test-reverse-wechat-official-accounts-paid-article/saved_articles/*.md
+../xifeng-rag-private-corpus/saved_articles/*.md
 ```
 
 该位置由 `corpus.source_dir` 配置，不在代码中绑定绝对路径。源目录只读，项目只将派生数据写入自身的数据目录。

@@ -10,7 +10,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class CorpusSettings(BaseModel):
-    source_dir: Path = Path("../test-reverse-wechat-official-accounts-paid-article/saved_articles")
+    source_dir: Path = Path("../xifeng-rag-private-corpus/saved_articles")
     excluded_article_ids: list[str] = Field(default_factory=list)
 
     @field_validator("excluded_article_ids")
@@ -106,8 +106,8 @@ class GeneratorSettings(BaseModel):
 
 
 class OllamaSettings(BaseModel):
-    executable: Path = Path("D:/ai-tools/ollama/ollama.exe")
-    model_dir: Path = Path("D:/ai-models/ollama")
+    executable: Path = Path("tools/ollama/ollama.exe")
+    model_dir: Path = Path("models/ollama")
     host: str = "http://127.0.0.1:11434"
     model: str = "qwen3:4b-instruct-2507-q4_K_M"
     context_window: int = 32768

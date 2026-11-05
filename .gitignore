@@ -29,10 +29,14 @@ htmlcov/
 # Secrets and machine-local configuration
 .env
 .env.*
+*.env
 !.env.example
 *.pem
 *.key
 config.local.*
+/private/
+/scratch/
+/exports/
 
 # Private corpus and generated RAG data
 /saved_articles/
@@ -44,6 +48,10 @@ config.local.*
 /runs/
 /logs/
 /tmp/
+/docs/guides/job-search-project-checklist.md
+/docs/guides/rag-interview-review.md
+/tempnpm-cache/
+/docs/handoffs/
 
 # Skill test workspaces (contain paid-article excerpts, never commit)
 .claude/skills/*-workspace/

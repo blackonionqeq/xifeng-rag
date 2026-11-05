@@ -80,7 +80,7 @@ xifeng eval run EVALSET.json
 配置使用 `corpus.source_dir`，默认值为：
 
 ```text
-../test-reverse-wechat-official-accounts-paid-article/saved_articles
+../xifeng-rag-private-corpus/saved_articles
 ```
 
 路径相对于项目根目录解析。只读取目录顶层 `*.md`；忽略 HTML 和 `linked/`。任何流程都不得修改、移动或删除源文件。
@@ -154,8 +154,8 @@ context_window: 32768
 temperature: 0
 output: JSON Schema constrained
 validation: Pydantic + coverage validators
-ollama_home: D:\ai-tools\ollama
-model_store: D:\ai-models\ollama
+ollama_home: <local-ollama-directory>
+model_store: <local-model-directory>
 ```
 
 安装使用官方 Windows standalone 包，不安装托盘应用或开机服务。模型当前约 2.5 GB。程序按需检测或启动 `ollama serve`，通过仅绑定本机的 HTTP API 发送非流式请求，并设置 JSON Schema、`num_ctx=32768` 和最大输出限制。

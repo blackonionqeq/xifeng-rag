@@ -27,6 +27,12 @@ uv sync --python 3.11
 uv run xifeng init
 ```
 
+复制公开配置模板并把 `corpus.source_dir` 改为你有权使用的本地 Markdown 目录：
+
+```powershell
+Copy-Item config.example.yaml config.local.yaml
+```
+
 本地密钥可放在 Git 忽略的项目根目录 `.env`：
 
 ```powershell
@@ -105,4 +111,13 @@ uv run xifeng demo
 
 付费文章不存放在本仓库内。应用通过本地配置项 `corpus.source_dir` 只读加载外部目录顶层的 Markdown；不得将真实正文、审核产物或包含正文的索引提交到版本库。运行数据库、审核文件和索引位于 Git 忽略的 `data/`。
 
+本仓库公开内容只包含程序、通用设计文档和自造测试夹具，不包含原始付费语料、真实评测题、
+审核产物、数据库、索引、模型权重、运行日志或 API 密钥。公开演示、CI、Issue、PR、Release 和
+截图也只能使用自造短文本；Git LFS 不能替代这一数据边界。
+
 完整的语料处理、外发例外和隐私约束见 [AGENTS.md](AGENTS.md) 与[切块和索引设计](docs/design/chunking-and-indexing.md)。
+
+## 许可证
+
+项目代码与仓库内通用文档使用 [MIT License](LICENSE)。该许可证不适用于任何外部语料、模型
+权重或第三方服务；使用者必须自行确认其数据与模型的授权范围。

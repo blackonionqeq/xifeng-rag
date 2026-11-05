@@ -76,8 +76,8 @@ retrieval:
   rrf_k: 60
 ```
 
-仓库示例不得绑定本机绝对路径。本机 `config.local.yaml` 将 `model_cache_dir` 设置为
-`D:/ai-models/huggingface`。`device=auto` 允许运行库选择可用设备；最终解析出的设备必须写入
+仓库示例不得绑定本机绝对路径。本机 `config.local.yaml` 可将 `model_cache_dir` 设置为任意
+Git 忽略的本地模型缓存目录。`device=auto` 允许运行库选择可用设备；最终解析出的设备必须写入
 Build 元数据。批大小是运行参数，可以在不改变向量语义时调整，但应写入构建诊断。
 
 首次模型下载是用户明确执行的安装或建库准备步骤。下载完成后，建库、检索和评测必须可在

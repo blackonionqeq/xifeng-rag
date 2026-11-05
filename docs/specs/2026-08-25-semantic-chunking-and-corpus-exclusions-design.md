@@ -21,7 +21,7 @@
 ```yaml
 corpus:
   excluded_article_ids:
-    - sn:2a602cf6b0a62299d0f31f4245bf6d4a
+    - sn:example-incomplete-preview
 ```
 
 默认列表为空。真实语料的排除项写入 Git 忽略的 `config.local.yaml`，示例配置只展示

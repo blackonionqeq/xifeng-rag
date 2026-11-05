@@ -1,6 +1,7 @@
 project_root: .
 corpus:
-  source_dir: ../test-reverse-wechat-official-accounts-paid-article/saved_articles
+  # 指向你有权使用的本地 Markdown 目录；该目录不得提交到本仓库。
+  source_dir: ../xifeng-rag-private-corpus/saved_articles
   excluded_article_ids: []
 storage:
   data_dir: data
@@ -60,8 +61,9 @@ generator:
   max_output_tokens: 4096
   temperature: 0.1
 ollama:
-  executable: D:/ai-tools/ollama/ollama.exe
-  model_dir: D:/ai-models/ollama
+  # Windows standalone 示例；按本机安装位置在 config.local.yaml 中覆盖。
+  executable: tools/ollama/ollama.exe
+  model_dir: models/ollama
   host: http://127.0.0.1:11434
   model: qwen3:4b-instruct-2507-q4_K_M
   context_window: 32768

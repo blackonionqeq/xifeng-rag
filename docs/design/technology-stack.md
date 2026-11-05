@@ -104,7 +104,9 @@ MCP；它在隐私分类上仍属于外部推理，并依赖用户自己的 Chat
 
 第一阶段默认使用 `qwen3:4b-instruct-2507-q4_K_M` 完成离线语义分块和概括，实际上下文先设为 32K，并通过 Ollama JSON Schema 输出与 Pydantic 校验保证结构。少数单篇重试可使用显式配置的 OpenAI-compatible 外部模型；外部 JSON mode 不能替代本地 Pydantic 与覆盖校验。这些模型都属于索引预处理组件，不作为本地 Generator 对外提供问答服务。
 
-Windows 使用官方 Ollama standalone CLI，不安装托盘应用、不注册开机启动。程序放在 `D:\ai-tools\ollama`，模型通过 `OLLAMA_MODELS` 指向 `D:\ai-models\ollama`。Ollama 服务只在离线预处理时按需启动。模型或运行后端只有在本机长文验收不达标时才替换。
+Windows 使用官方 Ollama standalone CLI，不安装托盘应用、不注册开机启动。可执行文件和
+`OLLAMA_MODELS` 目录通过 Git 忽略的 `config.local.yaml` 配置，不在公开代码中绑定本机路径。
+Ollama 服务只在离线预处理时按需启动。模型或运行后端只有在本机长文验收不达标时才替换。
 
 ## 5. 前端
 

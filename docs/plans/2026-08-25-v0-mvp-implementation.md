@@ -4,7 +4,7 @@
 
 ## 交付顺序
 
-1. 安装并验证 Windows standalone Ollama，模型目录使用 `D:\ai-models\ollama`，拉取 `qwen3:4b-instruct-2507-q4_K_M`。
+1. 安装并验证 Windows standalone Ollama，通过本地配置指定模型目录，拉取 `qwen3:4b-instruct-2507-q4_K_M`。
 2. 建立 Python 3.11、uv、Typer、Pydantic v2、SQLAlchemy 2、Alembic、bm25s、中文分词、pytest、Ruff 与 Pyright 工程。
 3. 实现配置、数据库模型、事务、领域类型、稳定 ID 和 CLI 基础命令。
 4. 实现顶层 Markdown 扫描、块级解析、链接规范化、保守尾部清理、位置映射和增量分类。
